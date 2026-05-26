@@ -1,8 +1,10 @@
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 import type { Database } from './schema.js';
+import { JsonbWritePlugin } from './jsonb-write-plugin.js';
 
 export * from './schema.js';
+export { JsonbWritePlugin } from './jsonb-write-plugin.js';
 
 export interface CreateDbOptions {
   connectionString: string;
@@ -13,6 +15,7 @@ export function createDb({ connectionString, poolMax = 10 }: CreateDbOptions): K
   const pool = new pg.Pool({ connectionString, max: poolMax });
   return new Kysely<Database>({
     dialect: new PostgresDialect({ pool }),
+    plugins: [new JsonbWritePlugin()],
   });
 }
 

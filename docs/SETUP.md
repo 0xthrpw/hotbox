@@ -42,14 +42,9 @@ git clone <repo-url> hotbox && cd hotbox
 pnpm install
 ```
 
-The install warns about `argon2` build scripts being ignored. Approve them so the prebuilt binary is fetched:
+`pnpm install` runs `argon2`'s postinstall automatically (it's listed in `package.json#pnpm.onlyBuiltDependencies`). If your platform doesn't have a prebuilt argon2 binary, swap to `hash-wasm` — but on linux-x64 + macOS this Just Works.
 
-```bash
-pnpm approve-builds
-# select argon2 (space to toggle, enter to confirm)
-```
-
-If your platform doesn't have a prebuilt argon2 binary, swap to `hash-wasm` — but on linux-x64 + macOS this Just Works.
+You can optionally `pnpm approve-builds` and select `sharp` (Next.js image library); skipping it is fine and only suppresses a runtime warning.
 
 ### 2.3 Start the local Postgres
 
@@ -116,7 +111,17 @@ Open <http://localhost:3001/login> and sign in with the credentials you seeded.
 
 ### 2.9 Smoke test: deploy nginx
 
-From the dashboard, hit **+ New service** (TODO: this UI screen is not yet built — for now create via the API directly):
+From the dashboard, hit **+ New service** (or go straight to <http://localhost:3001/services/new>). Fill in:
+
+- **Name**: `test nginx`
+- **Slug**: `test-nginx`
+- **Template**: `— none —`
+- **Image**: `nginx:alpine`
+- **Public port**: `80`
+
+Leave Hostname blank for a pure smoke test (the container will run but Traefik won't route to it). Click **Create service**.
+
+The equivalent API call:
 
 ```bash
 curl -X POST http://localhost:3000/api/services \
@@ -232,7 +237,7 @@ cat > .env <<'EOF'
 ACME_EMAIL=ops@your-org.example
 HOTBOX_WEB_HOST=hotbox.example
 HOTBOX_API_HOST=hotbox-api.example
-HOTBOX_PG_PASSWORD=$(openssl rand -base64 24)
+HOTBOX_PG_PASSWORD=$(openssl rand -hex 24)
 HOTBOX_HOST_ID=                # fill in after first seed run
 HOTBOX_REPO=your-org/hotbox
 HOTBOX_VERSION=<git short sha>
@@ -240,7 +245,7 @@ EOF
 chmod 0600 .env
 ```
 
-`HOTBOX_PG_PASSWORD` is the password Postgres uses internally — it's not stored elsewhere, so generate once and keep it in `.env`.
+`HOTBOX_PG_PASSWORD` is the password Postgres uses internally — it's not stored elsewhere, so generate once and keep it in `.env`. We use `-hex` rather than `-base64` because the password is string-interpolated into a `postgres://…` URL and `/`/`+` from base64 break URL parsing.
 
 ### 3.6 Start the stack
 
@@ -267,9 +272,11 @@ Traefik will negotiate Let's Encrypt certs over HTTP-01 on :80. Look for `succes
 
 ### 3.7 First-run migrations and seed (in-container)
 
+Use `docker compose run --rm`, not `exec`. The api fails fast at boot if `HOST_ID` is missing from its env, so on a fresh stack the `hotbox-api` container is in a restart loop until you've seeded a host row and pasted its UUID into `.env`. `exec` requires a running container and fights the restart loop; `run --rm` starts a fresh one-shot container with the right command (the migrate/seed scripts don't need `HOST_ID`).
+
 ```bash
-docker compose -f compose.hotbox.yml exec hotbox-api pnpm db:migrate
-docker compose -f compose.hotbox.yml exec \
+docker compose -f compose.hotbox.yml run --rm hotbox-api pnpm db:migrate
+docker compose -f compose.hotbox.yml run --rm \
   -e SEED_ADMIN_EMAIL=you@your-org.example \
   -e SEED_ADMIN_PASSWORD='use a strong one' \
   -e SEED_HOST_NAME=hetzner-ax102 \

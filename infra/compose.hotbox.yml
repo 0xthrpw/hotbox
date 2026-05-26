@@ -23,7 +23,11 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ./traefik/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
+      # Directory mount, not single-file. Single-file bind-mounts pin the host
+      # inode at mount time; editors that atomically rename (nano, sed -i, vim
+      # w/ backup) create a new inode and the container keeps reading the old
+      # one — Traefik's `watch: true` never sees the change.
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
       - traefik-acme:/etc/traefik/acme
 
   hotbox-pg:
@@ -58,7 +62,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /etc/hotbox/master.key:/etc/hotbox/master.key:ro
     labels:
-      hotbox.managed: "true"  # so traefik docker provider sees it
+      hotbox.managed: "true"
+      traefik.enable: "true"
+      traefik.http.routers.hotbox-api.rule: "Host(`${HOTBOX_API_HOST}`)"
+      traefik.http.routers.hotbox-api.entrypoints: "websecure"
+      traefik.http.routers.hotbox-api.tls.certresolver: "le"
+      traefik.http.services.hotbox-api.loadbalancer.server.port: "3000"
 
   hotbox-web:
     image: ghcr.io/${HOTBOX_REPO}/hotbox-web:${HOTBOX_VERSION}
@@ -70,6 +79,11 @@ services:
       PORT: "3000"
     labels:
       hotbox.managed: "true"
+      traefik.enable: "true"
+      traefik.http.routers.hotbox-web.rule: "Host(`${HOTBOX_WEB_HOST}`)"
+      traefik.http.routers.hotbox-web.entrypoints: "websecure"
+      traefik.http.routers.hotbox-web.tls.certresolver: "le"
+      traefik.http.services.hotbox-web.loadbalancer.server.port: "3000"
 
   hotbox-metrics-scraper:
     image: ghcr.io/${HOTBOX_REPO}/hotbox-metrics-scraper:${HOTBOX_VERSION}
