@@ -119,6 +119,21 @@ describe('JsonbWritePlugin', () => {
     expect(sql).toMatch(/cast\(\$\d+ as jsonb\)/i);
   });
 
+  it('replaces, does not append, transformed UPDATE columns (regression: "multiple assignments to same column")', () => {
+    const db = makeDb();
+    const { sql } = db
+      .updateTable('deployments')
+      .set({ container_digests: { primary: 'sha256:abc' } })
+      .where('id', '=', 'd-1')
+      .compile();
+
+    // The column should appear exactly once on the LHS of SET. Anything more
+    // means we appended instead of replaced and Postgres will reject with
+    // 'multiple assignments to same column'.
+    const matches = sql.match(/"container_digests"/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
+
   it('leaves non-jsonb columns untouched on INSERT', () => {
     const db = makeDb();
     const { parameters } = db

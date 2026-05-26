@@ -115,7 +115,10 @@ function transformUpdate(node: UpdateQueryNode): UpdateQueryNode {
   });
 
   if (!changed) return node;
-  return UpdateQueryNode.cloneWithUpdates(node, newUpdates);
+  // Don't use UpdateQueryNode.cloneWithUpdates — it appends to the existing
+  // updates list rather than replacing it, which would produce two SET clauses
+  // for the same column ("multiple assignments to same column").
+  return { ...node, updates: newUpdates };
 }
 
 export class JsonbWritePlugin implements KyselyPlugin {
