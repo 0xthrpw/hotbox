@@ -291,56 +291,27 @@ Browse to `https://hotbox.example`, sign in with the seeded admin. You're done w
 
 ## 4. Deploying the Ethereum archive node
 
-The Eth node is the first "real" workload. The plan is to declare a service with `template: "eth-archive"`, let the reconciler stand up Erigon + Lighthouse, wait for sync, then issue an RPC token and start pointing internal services at it.
+One API call creates the service; the reconciler does the rest:
 
-### 4.1 What's not yet wired (heads-up)
+- Creates the named Docker network `eth-archive-eth` (`internal: true`).
+- Creates the three named volumes (`<slug>-erigon-data`, `<slug>-lighthouse-data`, `<slug>-jwt`).
+- Runs the bootstrap step — a one-shot `alpine:3` container that writes a fresh 32-byte JWT into the shared volume (no-op if already present, so it's safe to re-run).
+- Pulls and pins digests for both Erigon and Lighthouse images.
+- Starts Lighthouse and Erigon on the right networks with the right mounts.
+- Adds Traefik labels on the Erigon container so `rpc.example` routes through `hotbox-rpc-proxy@file` with the `hotbox-auth` ForwardAuth middleware.
 
-In this v0 there are two known gaps you'll hit when you try this:
+### 4.1 Create the service
 
-1. **The template-aware service creation flow is not in the UI.** The current `POST /services` accepts a `template` field, but the reconciler does not yet read `infra/templates/eth-archive.json` and materialize the two containers + the JWT bootstrap file. That orchestration is the next implementation step. Until then, the workaround below uses two manual `POST /services` calls — one for `<svc>-erigon` and one for `<svc>-lighthouse`.
-2. **The JWT bootstrap step isn't automated.** You'll generate the JWT on the host once and bind-mount it.
-
-Both are listed in the plan's "next-iteration work" and are small relative to what's already built.
-
-### 4.2 Create the JWT secret on the host
-
-```bash
-sudo mkdir -p /data/eth-archive/jwt
-sudo openssl rand -hex 32 | sudo tee /data/eth-archive/jwt/jwt.hex >/dev/null
-sudo chmod 0640 /data/eth-archive/jwt/jwt.hex
-```
-
-### 4.3 Pre-create volumes and network
+After logging in via the UI, your browser holds a session cookie:
 
 ```bash
-docker network create --internal eth-archive-eth
-docker volume create eth-archive-erigon-data
-docker volume create eth-archive-lighthouse-data
-```
-
-(Once template-aware reconciliation lands, hotbox will do this.)
-
-### 4.4 Create the two services via API
-
-After logging in via the UI, your browser holds a session cookie. From the same machine:
-
-```bash
-# get the cookie from your browser devtools (Application → Cookies → hotbox_session)
+# grab the cookie from devtools → Application → Cookies → hotbox_session
 COOKIE='hotbox_session=…'
 API=https://hotbox-api.example
 
 curl -X POST $API/api/services -H 'content-type: application/json' -H "cookie: $COOKIE" -d '{
-  "name": "Eth archive — Lighthouse",
-  "slug": "eth-archive-lighthouse",
-  "kind": "app",
-  "template": "eth-archive",
-  "image": "sigp/lighthouse:v8",
-  "env": {}
-}'
-
-curl -X POST $API/api/services -H 'content-type: application/json' -H "cookie: $COOKIE" -d '{
-  "name": "Eth archive — Erigon",
-  "slug": "eth-archive-erigon",
+  "name": "Eth archive",
+  "slug": "eth-archive",
   "kind": "app",
   "template": "eth-archive",
   "image": "erigontech/erigon:v3",
@@ -350,15 +321,24 @@ curl -X POST $API/api/services -H 'content-type: application/json' -H "cookie: $
 }'
 ```
 
-Then put the containers on the `eth-archive-eth` network and bind-mount the JWT + data volumes. (Again — once the template runner lands, this drops to a single API call.)
+Notes on the fields:
+- `template: "eth-archive"` is what triggers multi-container orchestration. The reconciler reads `packages/shared/templates/eth-archive.json` to know what containers, volumes, networks, and bootstrap steps to run.
+- `image` is informational for template services — the per-role images (Erigon, Lighthouse) come from the template. We store this for deployment history.
+- `hostname` + `public_port` together produce the Traefik labels. Because the template's Erigon container declares `ingress_via: "hotbox-rpc-proxy@file"`, Traefik routes `rpc.example` to the shared rpc-proxy, not directly to Erigon.
 
-### 4.5 Watch the sync
+Within ~5 seconds the reconciler will pull images, create the volumes/network/JWT, and start both containers. Watch the API logs (`docker compose logs -f hotbox-api`) — you'll see lines like:
 
-Open the service detail page in the UI. With `template: "eth-archive"` and the metrics-scraper running, you should see the `EthSyncPanel` populate within a minute or two with stage progress bars. The full archive sync via Erigon OtterSync typically completes in **~6–12 hours** on this hardware.
+```
+apply eth-archive starting…
+created container eth-archive-lighthouse-v1
+created container eth-archive-erigon-v1
+```
 
-Lighthouse comes online faster — checkpoint sync usually catches up in under an hour.
+### 4.2 Watch the sync
 
-### 4.6 Issue an RPC token
+Open the service detail page in the UI. The `EthSyncPanel` populates within a minute as the metrics-scraper starts pulling from `eth-archive-erigon:6061` and `eth-archive-lighthouse:5054`. Full archive sync via Erigon OtterSync typically completes in **~6–12 hours** on AX102 hardware; Lighthouse catches up in well under an hour via checkpoint sync.
+
+### 4.3 Issue an RPC token
 
 Once Erigon's `Execution` stage hits 100% and `chain_head_block` is climbing, issue a token:
 
@@ -366,7 +346,7 @@ Once Erigon's `Execution` stage hits 100% and `chain_head_block` is climbing, is
 curl -X POST $API/api/tokens -H 'content-type: application/json' -H "cookie: $COOKIE" -d '{
   "name": "internal-service-X",
   "kind": "rpc",
-  "service_id": "<eth-archive-erigon service id>",
+  "service_id": "<eth-archive service id>",
   "tier": "public",
   "rate_limit_per_min": 6000
 }'
@@ -374,7 +354,7 @@ curl -X POST $API/api/tokens -H 'content-type: application/json' -H "cookie: $CO
 
 The response includes the plaintext token **exactly once** — `hbx_rpc_<…>`. Stash it in your service's secret store.
 
-### 4.7 First RPC call
+### 4.4 First RPC call
 
 ```bash
 curl -s -X POST https://rpc.example \
@@ -383,9 +363,15 @@ curl -s -X POST https://rpc.example \
   -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}'
 ```
 
-A successful response means the full chain is working: Traefik → ForwardAuth → rpc-proxy → Erigon. Failed (401) means the token was rejected — check it isn't revoked and that the `service_id` matches the routed hostname.
+A successful response means the full chain is working: Traefik → ForwardAuth (`/internal/authz` on hotbox-api) → rpc-proxy (`hotbox-rpc-proxy:9090`) → Erigon (`eth-archive-erigon:8545`).
 
-### 4.8 Cut over from Alchemy
+Failure modes:
+- **401**: token revoked / typo / scoped to a different service (`x-forwarded-host` didn't match `services.hostname`).
+- **403**: token tier doesn't permit the method — e.g., a `public`-tier token tried a `debug_*` call.
+- **404 "no upstream registered"**: rpc-proxy lookup found the service but it isn't a template that maps to an Erigon upstream. Verify the service's `template` field is `eth-archive`.
+- **502 "upstream unreachable"**: rpc-proxy can't reach `<slug>-erigon:8545`. Check both containers are on `hotbox-public`.
+
+### 4.5 Cut over from Alchemy
 
 1. Pick a single low-traffic internal service first.
 2. Flip its RPC URL env var from `https://eth-mainnet.g.alchemy.com/v2/…` to `https://rpc.example` with the bearer token.

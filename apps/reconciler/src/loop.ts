@@ -2,13 +2,19 @@ import type Dockerode from 'dockerode';
 import type { HotboxDb, Service, Deployment } from '@hotbox/db';
 import {
   listManagedContainers,
-  pullAndResolveDigest,
   buildContainerCreateOptions,
   tailEvents,
   type ManagedContainerInfo,
 } from '@hotbox/docker';
-import { labelsFor, LABEL_DEPLOYMENT_ID, LABEL_VERSION } from '@hotbox/shared/labels';
+import { labelsFor, LABEL_DEPLOYMENT_ID, LABEL_VERSION, LABEL_ROLE } from '@hotbox/shared';
 import { traefikLabelsFor } from './traefik-labels.js';
+import {
+  planRoles,
+  ensureTemplateInfra,
+  ensureRoleDigest,
+  buildOptionsForRole,
+  type RolePlan,
+} from './template-runner.js';
 
 const TICK_INTERVAL_MS = 5_000;
 
@@ -49,7 +55,6 @@ export class Reconciler {
     if (this.eventsAbort) { this.eventsAbort.abort(); this.eventsAbort = null; }
   }
 
-  /** Schedule a reconcile for one service ASAP. Coalesces if a tick is already running. */
   reconcileSoon(serviceId: string): void {
     this.dirty.add(serviceId);
     queueMicrotask(() => this.tick().catch((e) => this.log.error('on-demand tick failed', e)));
@@ -98,7 +103,13 @@ export class Reconciler {
   }
 
   private async applyService(service: Service, observed: ManagedContainerInfo[]): Promise<void> {
-    const latest = await this.db
+    if (service.desired_state === 'stopped' || service.desired_state === 'archived') {
+      for (const c of observed) await this.removeContainer(c.id);
+      await this.db.updateTable('services').set({ current_state: 'stopped' }).where('id', '=', service.id).execute();
+      return;
+    }
+
+    const deployment = await this.db
       .selectFrom('deployments')
       .selectAll()
       .where('service_id', '=', service.id)
@@ -106,92 +117,112 @@ export class Reconciler {
       .orderBy('version', 'desc')
       .executeTakeFirst();
 
-    if (service.desired_state === 'stopped' || service.desired_state === 'archived') {
-      for (const c of observed) await this.removeContainer(c.id);
-      await this.db.updateTable('services').set({ current_state: 'stopped' }).where('id', '=', service.id).execute();
+    if (!deployment) {
+      await this.db.updateTable('services').set({ current_state: 'pending' }).where('id', '=', service.id).execute();
       return;
     }
 
-    if (!latest) {
+    // Materialise networks, volumes, and bootstrap files (template only — no-op otherwise).
+    await ensureTemplateInfra(this.docker, service);
+
+    const plan = await planRoles(service, deployment);
+    await this.applyPlan(service, deployment, plan, observed);
+  }
+
+  private async applyPlan(
+    service: Service,
+    deployment: Deployment,
+    plan: RolePlan[],
+    observed: ManagedContainerInfo[],
+  ): Promise<void> {
+    // Group observed by role
+    const byRole = new Map<string, ManagedContainerInfo[]>();
+    for (const c of observed) {
+      const role = c.labels[LABEL_ROLE] ?? 'primary';
+      const arr = byRole.get(role) ?? [];
+      arr.push(c);
+      byRole.set(role, arr);
+    }
+
+    const planRoleNames = new Set(plan.map((p) => p.role));
+
+    // Remove roles that aren't in the plan any more (e.g., template was changed).
+    for (const [role, list] of byRole) {
+      if (!planRoleNames.has(role)) {
+        for (const c of list) await this.removeContainer(c.id);
+      }
+    }
+
+    let anyStarted = false;
+    for (const item of plan) {
+      const obs = byRole.get(item.role) ?? [];
+      const matching = obs.filter(
+        (c) =>
+          c.labels[LABEL_DEPLOYMENT_ID] === deployment.id &&
+          c.labels[LABEL_VERSION] === String(deployment.version),
+      );
+      const stale = obs.filter((c) => !matching.includes(c));
+
+      const replaceFirst = service.config.replace_strategy === 'stop_then_start';
+      if (replaceFirst) for (const c of stale) await this.removeContainer(c.id);
+
+      if (matching.length === 0) {
+        await this.startRole(service, deployment, item);
+        anyStarted = true;
+      }
+
+      if (!replaceFirst) for (const c of stale) await this.removeContainer(c.id);
+    }
+
+    if (anyStarted) {
       await this.db
         .updateTable('services')
-        .set({ current_state: 'pending' })
+        .set({ current_state: 'starting' })
         .where('id', '=', service.id)
         .execute();
-      return;
-    }
-
-    const matching = observed.filter(
-      (c) => c.labels[LABEL_DEPLOYMENT_ID] === latest.id && c.labels[LABEL_VERSION] === String(latest.version),
-    );
-    const stale = observed.filter((c) => !matching.includes(c));
-
-    if (service.config.replace_strategy === 'stop_then_start') {
-      for (const c of stale) await this.removeContainer(c.id);
-    }
-
-    if (matching.length === 0) {
-      await this.startDeployment(service, latest);
-    }
-
-    if (service.config.replace_strategy !== 'stop_then_start') {
-      for (const c of stale) await this.removeContainer(c.id);
+      await this.db
+        .updateTable('deployments')
+        .set({ status: 'active' })
+        .where('id', '=', deployment.id)
+        .execute();
     }
   }
 
-  private async startDeployment(service: Service, deployment: Deployment): Promise<void> {
-    let digest = deployment.image_digest;
-    if (!digest) {
-      digest = await pullAndResolveDigest(this.docker, deployment.image);
-      await this.db
-        .updateTable('deployments')
-        .set({ image_digest: digest })
-        .where('id', '=', deployment.id)
-        .execute();
-    } else {
-      await pullAndResolveDigest(this.docker, deployment.image).catch(() => {});
-    }
+  private async startRole(service: Service, deployment: Deployment, item: RolePlan): Promise<void> {
+    const digest = await ensureRoleDigest(this.db, this.docker, deployment, item.role, item.image);
 
-    const labels: Record<string, string> = {
+    const baseLabels: Record<string, string> = {
       ...labelsFor({
         serviceId: service.id,
         serviceSlug: service.slug,
         deploymentId: deployment.id,
         version: deployment.version,
-        role: 'primary',
+        role: item.role,
       }),
-      ...traefikLabelsFor(service, { requireAuth: !!service.config.requires?.some(() => false) }),
+      ...traefikLabelsFor({ service, container: item.container }),
     };
 
-    const options = buildContainerCreateOptions({
-      name: `${service.slug}-v${deployment.version}`,
-      image: deployment.image,
-      imageDigest: digest,
-      labels,
-      env: deployment.env_snapshot,
-      ports: service.public_port
-        ? [{ container: service.public_port, protocol: 'tcp' }]
-        : [],
-      volumes: deployment.volume_refs.map((v) => ({
-        source: v.volume_id,
-        target: v.mountpoint,
-        ro: v.ro,
-      })),
-      networks: deployment.network_refs.map((n) => n.alias ?? n.network_id),
-      restartPolicy: service.config.restart_policy ?? 'on-failure',
-      stopGracePeriodSec: service.config.stop_grace_period_sec ?? 30,
-      healthcheck: service.config.healthcheck?.type === 'http' && service.public_port && service.config.healthcheck.path
-        ? {
-            test: ['CMD-SHELL', `wget -qO- http://127.0.0.1:${service.public_port}${service.config.healthcheck.path} || exit 1`],
-            interval_s: service.config.healthcheck.interval_s,
-            retries: service.config.healthcheck.retries,
-          }
-        : undefined,
+    const buildInput = buildOptionsForRole({
+      service,
+      deployment,
+      role: item.role,
+      container: item.container,
+      digest,
+      baseLabels,
+      version: deployment.version,
     });
 
-    await this.db.updateTable('services').set({ current_state: 'creating' }).where('id', '=', service.id).execute();
+    const options = buildContainerCreateOptions(buildInput);
+
+    await this.db
+      .updateTable('services')
+      .set({ current_state: 'creating' })
+      .where('id', '=', service.id)
+      .execute();
+
     const created = await this.docker.createContainer(options);
     await this.docker.getContainer(created.id).start();
+
     await this.db
       .insertInto('containers')
       .values({
@@ -201,16 +232,6 @@ export class Reconciler {
         name: options.name ?? null,
         state: 'starting',
       })
-      .execute();
-    await this.db
-      .updateTable('services')
-      .set({ current_state: 'starting' })
-      .where('id', '=', service.id)
-      .execute();
-    await this.db
-      .updateTable('deployments')
-      .set({ status: 'active' })
-      .where('id', '=', deployment.id)
       .execute();
   }
 
@@ -223,8 +244,8 @@ export class Reconciler {
 }
 
 export interface DriftReport {
-  orphanContainers: ManagedContainerInfo[];    // in Docker, not in DB
-  orphanRecords: Array<{ id: string; docker_id: string }>; // in DB, not in Docker
+  orphanContainers: ManagedContainerInfo[];
+  orphanRecords: Array<{ id: string; docker_id: string }>;
 }
 
 export async function computeDrift(db: HotboxDb, docker: Dockerode): Promise<DriftReport> {
@@ -232,7 +253,6 @@ export async function computeDrift(db: HotboxDb, docker: Dockerode): Promise<Dri
   const observedIds = new Set(observed.map((c) => c.id));
   const records = await db.selectFrom('containers').select(['id', 'docker_id']).execute();
   const recordIds = new Set(records.map((r) => r.docker_id));
-
   return {
     orphanContainers: observed.filter((c) => !recordIds.has(c.id)),
     orphanRecords: records.filter((r) => !observedIds.has(r.docker_id)),

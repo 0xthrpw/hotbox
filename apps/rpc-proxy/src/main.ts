@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createDb } from '@hotbox/db';
 import { decide, applyParamLimits } from './policy.js';
 import { RequestLogBuffer } from './buffer.js';
+import { UpstreamRouter } from './upstream.js';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -11,11 +12,11 @@ interface JsonRpcRequest {
 }
 
 const dbUrl = required('DATABASE_URL');
-const upstream = required('UPSTREAM_URL');     // e.g. http://erigon:8545
 const port = Number(process.env.PORT ?? 9090);
 
 const db = createDb({ connectionString: dbUrl });
 const buffer = new RequestLogBuffer(db);
+const router = new UpstreamRouter(db);
 buffer.start();
 
 const server = createServer((req, res) => {
@@ -26,7 +27,7 @@ const server = createServer((req, res) => {
   });
 });
 
-server.listen(port, () => console.log(`hotbox-rpc-proxy listening on :${port} -> ${upstream}`));
+server.listen(port, () => console.log(`hotbox-rpc-proxy listening on :${port}`));
 
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.method !== 'POST') {
@@ -38,6 +39,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const serviceId = headerOne(req, 'x-hotbox-service-id');
   if (!serviceId) {
     res.writeHead(400, { 'content-type': 'text/plain' }).end('missing x-hotbox-service-id');
+    return;
+  }
+
+  const upstream = await router.resolve(serviceId);
+  if (!upstream) {
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'no upstream registered for this service' }));
     return;
   }
 
@@ -56,7 +64,6 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   const calls = Array.isArray(parsed) ? parsed : [parsed];
 
-  // Pre-check all calls; if any are rejected, short-circuit with per-call errors.
   const decisions = calls.map((c) => ({ call: c, decision: decide(c.method ?? '', tier) }));
   const limitErrors = calls.map((c) => applyParamLimits(c.method ?? '', c.params));
 
@@ -79,14 +86,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       res.end(JSON.stringify(payload));
       return;
     }
-    // Mixed allow/block: forward only allowed; reconstruct combined response.
-    // For v1 simplicity, if any call is blocked we reject the whole batch.
     res.writeHead(400, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'mixed batches not supported when any call is blocked' }));
     return;
   }
 
-  // Proxy upstream.
   let upstreamResponse: Response;
   try {
     upstreamResponse = await fetch(upstream, {
@@ -183,4 +187,3 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
     server.close(() => db.destroy().then(() => process.exit(0)));
   });
 }
-

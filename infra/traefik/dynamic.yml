@@ -34,3 +34,9 @@ http:
       loadBalancer:
         servers:
           - url: "http://hotbox-api:3000"
+    # Referenced by per-service routers via `ingress_via: hotbox-rpc-proxy@file`.
+    # The proxy resolves which Erigon to forward to from the service_id header.
+    hotbox-rpc-proxy:
+      loadBalancer:
+        servers:
+          - url: "http://hotbox-rpc-proxy:9090"

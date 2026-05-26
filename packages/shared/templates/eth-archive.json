@@ -53,7 +53,9 @@
         { "name": "{svc}-erigon-data", "mountpoint": "/home/erigon/.local/share/erigon" },
         { "name": "{svc}-jwt", "mountpoint": "/jwt", "ro": true }
       ],
-      "networks": ["{svc}-eth"]
+      "networks": ["{svc}-eth", "hotbox-public"],
+      "ingress": true,
+      "ingress_via": "hotbox-rpc-proxy@file"
     }
   ],
   "volumes": [
@@ -65,7 +67,7 @@
     { "name": "{svc}-eth", "internal": true }
   ],
   "bootstrap": [
-    { "path": "/jwt/jwt.hex", "kind": "random_hex", "size": 32, "mode": "0640" }
+    { "volume": "{svc}-jwt", "path": "jwt.hex", "kind": "random_hex", "size": 32, "mode": "0640" }
   ],
   "panels": [
     {
