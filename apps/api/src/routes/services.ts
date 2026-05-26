@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { CreateServiceInputSchema, CreateDeploymentInputSchema } from '@hotbox/shared';
 import { requireAuth } from './auth.js';
+import { recordAudit } from '../audit.js';
 
 export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/services', async (req) => {
@@ -32,11 +33,13 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       .orderBy('version', 'desc')
       .limit(20)
       .execute();
-    const containers = await fastify.ctx.db
-      .selectFrom('containers')
-      .selectAll()
-      .where('deployment_id', 'in', deployments.map((d) => d.id))
-      .execute();
+    const containers = deployments.length
+      ? await fastify.ctx.db
+          .selectFrom('containers')
+          .selectAll()
+          .where('deployment_id', 'in', deployments.map((d) => d.id))
+          .execute()
+      : [];
     return { service: svc, deployments, containers };
   });
 
@@ -78,6 +81,13 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       .returningAll()
       .executeTakeFirstOrThrow();
 
+    await recordAudit(fastify.ctx.db, req, {
+      action: 'service.create',
+      target_kind: 'service',
+      target_id: svc.id,
+      payload: { slug: svc.slug, template: svc.template, image: input.image },
+    });
+
     fastify.ctx.reconciler.reconcileSoon(svc.id);
     return { service: svc, deployment };
   });
@@ -114,6 +124,13 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       .returningAll()
       .executeTakeFirstOrThrow();
 
+    await recordAudit(fastify.ctx.db, req, {
+      action: 'deployment.create',
+      target_kind: 'deployment',
+      target_id: deployment.id,
+      payload: { service_id: id, version: deployment.version, image: input.image },
+    });
+
     fastify.ctx.reconciler.reconcileSoon(id);
     return { deployment };
   });
@@ -122,6 +139,7 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
     requireAuth(req);
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
     await fastify.ctx.db.updateTable('services').set({ desired_state: 'stopped' }).where('id', '=', id).execute();
+    await recordAudit(fastify.ctx.db, req, { action: 'service.stop', target_kind: 'service', target_id: id });
     fastify.ctx.reconciler.reconcileSoon(id);
     return reply.send({ ok: true });
   });
@@ -130,6 +148,7 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
     requireAuth(req);
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
     await fastify.ctx.db.updateTable('services').set({ desired_state: 'running' }).where('id', '=', id).execute();
+    await recordAudit(fastify.ctx.db, req, { action: 'service.start', target_kind: 'service', target_id: id });
     fastify.ctx.reconciler.reconcileSoon(id);
     return reply.send({ ok: true });
   });
