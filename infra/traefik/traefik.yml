@@ -1,0 +1,44 @@
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+
+api:
+  dashboard: false
+
+log:
+  level: INFO
+  format: json
+
+accessLog:
+  format: json
+  bufferingSize: 100
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: hotbox-public
+    constraints: "Label(`hotbox.managed`,`true`)"
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  le:
+    acme:
+      email: ${ACME_EMAIL}
+      storage: /etc/traefik/acme/acme.json
+      httpChallenge:
+        entryPoint: web
