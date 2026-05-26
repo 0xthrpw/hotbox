@@ -21,7 +21,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
     reply.setCookie(SESSION_COOKIE_NAME, token, {
       path: '/',
       httpOnly: true,
-      secure: true,
+      secure: process.env.WEB_ORIGIN?.startsWith('https://') ?? true,
       sameSite: 'lax',
       expires: expiresAt,
     });

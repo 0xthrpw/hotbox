@@ -13,6 +13,8 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "incremental": true,
+    // Intentional. All runnable services execute TS directly via
+    // `node --import tsx/esm src/main.ts`; tsc here is typecheck-only.
     "noEmit": true
   }
 }

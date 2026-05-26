@@ -10,32 +10,14 @@ http:
           - "x-hotbox-service-id"
         trustForwardHeader: true
 
-  routers:
-    hotbox-web:
-      rule: "Host(`${HOTBOX_WEB_HOST}`)"
-      entryPoints: [websecure]
-      service: hotbox-web
-      tls:
-        certResolver: le
-
-    hotbox-api:
-      rule: "Host(`${HOTBOX_API_HOST}`)"
-      entryPoints: [websecure]
-      service: hotbox-api
-      tls:
-        certResolver: le
-
   services:
-    hotbox-web:
-      loadBalancer:
-        servers:
-          - url: "http://hotbox-web:3000"
-    hotbox-api:
-      loadBalancer:
-        servers:
-          - url: "http://hotbox-api:3000"
     # Referenced by per-service routers via `ingress_via: hotbox-rpc-proxy@file`.
     # The proxy resolves which Erigon to forward to from the service_id header.
+    # Stays here because per-service routers reference it by `@file`.
+    #
+    # The hotbox-web and hotbox-api routers used to live here too — moved to
+    # docker labels in compose.hotbox.yml because the file provider does not
+    # substitute ${HOTBOX_WEB_HOST}-style env vars (the docker provider does).
     hotbox-rpc-proxy:
       loadBalancer:
         servers:

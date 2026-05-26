@@ -8,6 +8,12 @@ COPY pnpm-workspace.yaml pnpm-lock.yaml package.json .npmrc tsconfig.base.json .
 COPY packages packages
 COPY apps/web apps/web
 RUN pnpm install --frozen-lockfile
+# Next.js with `output: 'standalone'` evaluates next.config.ts's rewrites() at
+# build time and bakes the result into the standalone server's manifest. So
+# HOTBOX_API_URL has to be set HERE, not just at runtime, for the /api/* proxy
+# to point at the api container instead of falling back to 127.0.0.1.
+ARG HOTBOX_API_URL=http://hotbox-api:3000
+ENV HOTBOX_API_URL=$HOTBOX_API_URL
 RUN pnpm -F @hotbox/web build
 
 FROM node:22-alpine AS runtime

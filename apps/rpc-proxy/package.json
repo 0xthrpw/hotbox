@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc",
     "dev": "node --import tsx/esm src/main.ts",
-    "start": "node dist/main.js"
+    "start": "node --import tsx/esm src/main.ts"
   },
   "dependencies": {
     "@hotbox/db": "workspace:*"

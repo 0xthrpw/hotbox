@@ -135,7 +135,8 @@ export function buildOptionsForRole(opts: {
   injectedEnv: Record<string, string>;     // decrypted secrets, merged last
 }): BuildContainerSpecInput {
   const name = `${opts.service.slug}-${opts.role}-v${opts.version}`;
-  const deploymentNetworks = opts.deployment.network_refs.map((n) => n.name);
+  const networkRefs = Array.isArray(opts.deployment.network_refs) ? opts.deployment.network_refs : [];
+  const deploymentNetworks = networkRefs.map((n) => n.name);
 
   const aliasesFor = (networks: string[]): Record<string, string[]> => {
     const aliases = [opts.service.slug, `${opts.service.slug}-${opts.role}`];
@@ -184,7 +185,7 @@ export function buildOptionsForRole(opts: {
     ports: opts.service.public_port
       ? [{ container: opts.service.public_port, protocol: 'tcp' }]
       : [],
-    volumes: opts.deployment.volume_refs.map((v) => ({
+    volumes: (Array.isArray(opts.deployment.volume_refs) ? opts.deployment.volume_refs : []).map((v) => ({
       source: v.volume_id,
       target: v.mountpoint,
       ro: v.ro,
@@ -252,7 +253,8 @@ export async function ensureDeploymentInfra(
   docker: Dockerode,
   deployment: Deployment,
 ): Promise<void> {
-  for (const n of deployment.network_refs) {
+  const networkRefs = Array.isArray(deployment.network_refs) ? deployment.network_refs : [];
+  for (const n of networkRefs) {
     await ensureNetwork(docker, n.name, { internal: n.internal });
   }
 }
