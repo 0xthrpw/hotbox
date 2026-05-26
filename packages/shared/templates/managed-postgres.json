@@ -1,0 +1,27 @@
+{
+  "id": "managed-postgres",
+  "label": "Managed Postgres (16)",
+  "description": "Postgres 16 sibling, internal-only. Password is generated and stored encrypted; the parent service gets a *_URL secret_ref injected at deploy time.",
+  "containers": [
+    {
+      "role": "postgres",
+      "image": "postgres:16-alpine",
+      "env": {
+        "POSTGRES_USER": "app",
+        "POSTGRES_DB": "app"
+      },
+      "volumes": [
+        { "name": "{svc}-data", "mountpoint": "/var/lib/postgresql/data" }
+      ],
+      "networks": [],
+      "ingress": false
+    }
+  ],
+  "volumes": [
+    { "name": "{svc}-data" }
+  ],
+  "networks": [],
+  "bootstrap": [],
+  "panels": [],
+  "tokenScopes": []
+}

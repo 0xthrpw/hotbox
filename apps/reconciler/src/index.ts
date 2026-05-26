@@ -4,7 +4,9 @@ export {
   ensureNetwork,
   ensureVolume,
   ensureTemplateInfra,
+  ensureDeploymentInfra,
   runBootstrap,
   planRoles,
+  decryptSecretEnv,
   type RolePlan,
 } from './template-runner.js';

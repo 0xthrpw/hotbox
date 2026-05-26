@@ -1,8 +1,19 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { randomBytes } from 'node:crypto';
 import { CreateServiceInputSchema, CreateDeploymentInputSchema } from '@hotbox/shared';
+import { seal, type KeyRing } from '@hotbox/crypto';
+import type { CreateServiceInput } from '@hotbox/shared';
+import type { HotboxDb, NetworkRef, SecretRef } from '@hotbox/db';
 import { requireAuth } from './auth.js';
 import { recordAudit } from '../audit.js';
+
+interface SiblingPlanResult {
+  parentNetworkRefs: NetworkRef[];
+  parentSecretRefs: SecretRef[];
+  parentExtraEnv: Record<string, string>;
+  siblingIds: string[];
+}
 
 export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/services', async (req) => {
@@ -12,6 +23,8 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       .selectAll()
       .where('host_id', '=', fastify.ctx.hostId)
       .where('archived_at', 'is', null)
+      // hide managed siblings from the top-level list — they appear under their parent
+      .where('parent_service_id', 'is', null)
       .orderBy('created_at', 'desc')
       .execute();
     return { services: rows };
@@ -40,7 +53,13 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
           .where('deployment_id', 'in', deployments.map((d) => d.id))
           .execute()
       : [];
-    return { service: svc, deployments, containers };
+    const siblings = await fastify.ctx.db
+      .selectFrom('services')
+      .selectAll()
+      .where('parent_service_id', '=', id)
+      .where('archived_at', 'is', null)
+      .execute();
+    return { service: svc, deployments, containers, siblings };
   });
 
   fastify.post('/services', async (req, reply) => {
@@ -52,6 +71,17 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       .where('slug', '=', input.slug)
       .executeTakeFirst();
     if (existing) return reply.code(409).send({ error: 'slug taken' });
+
+    const requires = input.config?.requires ?? [];
+    for (const r of requires) {
+      const siblingSlug = `${input.slug}-${r.name}`;
+      const dup = await fastify.ctx.db
+        .selectFrom('services')
+        .select('id')
+        .where('slug', '=', siblingSlug)
+        .executeTakeFirst();
+      if (dup) return reply.code(409).send({ error: `slug taken: ${siblingSlug}` });
+    }
 
     const svc = await fastify.ctx.db
       .insertInto('services')
@@ -69,13 +99,31 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       .returningAll()
       .executeTakeFirstOrThrow();
 
+    let sibling: SiblingPlanResult = {
+      parentNetworkRefs: [],
+      parentSecretRefs: [],
+      parentExtraEnv: {},
+      siblingIds: [],
+    };
+    if (requires.length > 0) {
+      sibling = await createSiblings({
+        db: fastify.ctx.db,
+        parent: { id: svc.id, slug: svc.slug, name: svc.name, hostId: fastify.ctx.hostId },
+        requires,
+        keyring: fastify.ctx.keyring,
+        createdBy: req.user.id,
+      });
+    }
+
     const deployment = await fastify.ctx.db
       .insertInto('deployments')
       .values({
         service_id: svc.id,
         version: 1,
         image: input.image,
-        env_snapshot: input.env,
+        env_snapshot: { ...input.env, ...sibling.parentExtraEnv },
+        secret_refs: sibling.parentSecretRefs,
+        network_refs: sibling.parentNetworkRefs,
         created_by: req.user.id,
       })
       .returningAll()
@@ -85,11 +133,17 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       action: 'service.create',
       target_kind: 'service',
       target_id: svc.id,
-      payload: { slug: svc.slug, template: svc.template, image: input.image },
+      payload: {
+        slug: svc.slug,
+        template: svc.template,
+        image: input.image,
+        siblings: sibling.siblingIds,
+      },
     });
 
     fastify.ctx.reconciler.reconcileSoon(svc.id);
-    return { service: svc, deployment };
+    for (const sid of sibling.siblingIds) fastify.ctx.reconciler.reconcileSoon(sid);
+    return { service: svc, deployment, siblings: sibling.siblingIds };
   });
 
   fastify.post('/services/:id/deployments', async (req, reply) => {
@@ -105,7 +159,7 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
 
     const latest = await fastify.ctx.db
       .selectFrom('deployments')
-      .select(['version', 'image', 'env_snapshot'])
+      .select(['version', 'image', 'env_snapshot', 'secret_refs', 'network_refs'])
       .where('service_id', '=', id)
       .orderBy('version', 'desc')
       .executeTakeFirst();
@@ -121,6 +175,10 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         version: (latest?.version ?? 0) + 1,
         image,
         env_snapshot: env,
+        // Carry forward the wiring (secret refs, network refs) — a redeploy
+        // should not drop the link to managed siblings.
+        secret_refs: (latest?.secret_refs as SecretRef[] | undefined) ?? [],
+        network_refs: (latest?.network_refs as NetworkRef[] | undefined) ?? [],
         created_by: req.user.id,
       })
       .returningAll()
@@ -184,3 +242,112 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
   });
 }
 
+/**
+ * For each `requires` entry on a parent service, create the sibling service
+ * row + its initial deployment + the encrypted secrets that wire the parent
+ * to the sibling.
+ *
+ * Postgres siblings get:
+ *   - random password (24 base64url chars), encrypted into `secrets` scoped
+ *     to the sibling. Sibling deployment references it as POSTGRES_PASSWORD.
+ *   - `<NAME>_URL=postgres://app:<pw>@<sibling-slug>:5432/app` encrypted into
+ *     `secrets` scoped to the parent. Parent deployment references it.
+ *
+ * Redis siblings have no auth (the shared network is internal) — we inject a
+ * plain `<NAME>_URL=redis://<sibling-slug>:6379/0` into the parent's env.
+ */
+async function createSiblings(opts: {
+  db: HotboxDb;
+  parent: { id: string; slug: string; name: string; hostId: string };
+  requires: NonNullable<NonNullable<CreateServiceInput['config']>['requires']>;
+  keyring: KeyRing;
+  createdBy: string;
+}): Promise<SiblingPlanResult> {
+  const { db, parent, requires, keyring, createdBy } = opts;
+  const sharedNetwork = `${parent.slug}-net`;
+  const parentNetworkRefs: NetworkRef[] = [{ name: sharedNetwork, internal: true }];
+  const parentSecretRefs: SecretRef[] = [];
+  const parentExtraEnv: Record<string, string> = {};
+  const siblingIds: string[] = [];
+
+  for (const req of requires) {
+    const siblingSlug = `${parent.slug}-${req.name}`;
+    const template = req.kind === 'postgres' ? 'managed-postgres' : 'managed-redis';
+    const sibling = await db
+      .insertInto('services')
+      .values({
+        slug: siblingSlug,
+        name: `${parent.name} — ${req.name}`,
+        host_id: parent.hostId,
+        kind: req.kind === 'postgres' ? 'managed_pg' : 'managed_redis',
+        parent_service_id: parent.id,
+        template,
+        owner_id: createdBy,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    siblingIds.push(sibling.id);
+
+    if (req.kind === 'postgres') {
+      const password = randomBytes(24).toString('base64url');
+
+      const sealedPw = seal(keyring, password);
+      const pwSecret = await db
+        .insertInto('secrets')
+        .values({
+          service_id: sibling.id,
+          key: 'POSTGRES_PASSWORD',
+          ciphertext: sealedPw.ciphertext,
+          nonce: sealedPw.nonce,
+          key_version: sealedPw.keyVersion,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+
+      const url = `postgres://app:${password}@${siblingSlug}:5432/app`;
+      const envName = `${req.name.toUpperCase()}_URL`;
+      const sealedUrl = seal(keyring, url);
+      const urlSecret = await db
+        .insertInto('secrets')
+        .values({
+          service_id: parent.id,
+          key: envName,
+          ciphertext: sealedUrl.ciphertext,
+          nonce: sealedUrl.nonce,
+          key_version: sealedUrl.keyVersion,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      parentSecretRefs.push({ secret_id: urlSecret.id, inject_as: 'env', key: envName });
+
+      await db
+        .insertInto('deployments')
+        .values({
+          service_id: sibling.id,
+          version: 1,
+          image: 'postgres:16-alpine',
+          env_snapshot: {},
+          secret_refs: [{ secret_id: pwSecret.id, inject_as: 'env', key: 'POSTGRES_PASSWORD' }],
+          network_refs: [{ name: sharedNetwork, internal: true }],
+          created_by: createdBy,
+        })
+        .execute();
+    } else {
+      const envName = `${req.name.toUpperCase()}_URL`;
+      parentExtraEnv[envName] = `redis://${siblingSlug}:6379/0`;
+      await db
+        .insertInto('deployments')
+        .values({
+          service_id: sibling.id,
+          version: 1,
+          image: 'redis:7-alpine',
+          env_snapshot: {},
+          network_refs: [{ name: sharedNetwork, internal: true }],
+          created_by: createdBy,
+        })
+        .execute();
+    }
+  }
+
+  return { parentNetworkRefs, parentSecretRefs, parentExtraEnv, siblingIds };
+}

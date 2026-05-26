@@ -5,6 +5,7 @@ import { Reconciler } from '@hotbox/reconciler';
 import { loadMasterKey } from '@hotbox/crypto';
 import { buildServer } from './server.js';
 import { Aggregator } from './aggregator.js';
+import { RetentionJob } from './retention.js';
 
 async function main(): Promise<void> {
   const dbUrl = required('DATABASE_URL');
@@ -20,12 +21,16 @@ async function main(): Promise<void> {
     db,
     docker,
     hostId,
+    keyring,
     logger: { info: console.log, error: console.error },
   });
   reconciler.start();
 
   const aggregator = new Aggregator(db, { info: console.log, error: console.error });
   aggregator.start();
+
+  const retention = new RetentionJob(db, { info: console.log, error: console.error });
+  retention.start();
 
   const app = await buildServer({ db, docker, reconciler, keyring, hostId });
 
@@ -37,6 +42,7 @@ async function main(): Promise<void> {
       app.log.info(`got ${sig}, shutting down`);
       reconciler.stop();
       aggregator.stop();
+      retention.stop();
       await app.close();
       await db.destroy();
       process.exit(0);

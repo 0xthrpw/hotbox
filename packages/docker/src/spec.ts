@@ -17,6 +17,9 @@ export interface BuildContainerSpecInput {
   /** [{ source: '/host/path', target: '/container/path', ro? }] — bind mounts */
   binds?: Array<{ source: string; target: string; ro?: boolean }>;
   networks?: string[];
+  /** Per-network DNS aliases. The container is reachable on the network by
+   *  its container name and by each alias listed here. */
+  networkAliases?: Record<string, string[]>;
   restartPolicy?: 'no' | 'on-failure' | 'always' | 'unless-stopped';
   stopGracePeriodSec?: number;
   healthcheck?: {
@@ -73,7 +76,8 @@ export function buildContainerCreateOptions(
 
   const endpointsConfig: Record<string, Dockerode.EndpointSettings> = {};
   for (const n of input.networks ?? []) {
-    endpointsConfig[n] = {};
+    const aliases = input.networkAliases?.[n];
+    endpointsConfig[n] = aliases?.length ? { Aliases: aliases } : {};
   }
 
   const options: Dockerode.ContainerCreateOptions = {
