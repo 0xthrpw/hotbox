@@ -14,6 +14,7 @@ interface TemplateRow {
 }
 
 interface EnvRow { key: string; value: string }
+interface RequireRow { kind: 'postgres' | 'redis'; name: string }
 
 const fetcher = (url: string) => fetch(url, { credentials: 'include' }).then((r) => r.json());
 
@@ -29,6 +30,7 @@ export function CreateServiceForm() {
   const [hostname, setHostname] = useState('');
   const [publicPort, setPublicPort] = useState('');
   const [env, setEnv] = useState<EnvRow[]>([]);
+  const [requires, setRequires] = useState<RequireRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -62,6 +64,10 @@ export function CreateServiceForm() {
       if (template) body.template = template;
       if (hostname) body.hostname = hostname;
       if (publicPort) body.public_port = Number(publicPort);
+      const filteredRequires = requires.filter((r) => r.name.trim());
+      if (filteredRequires.length > 0) {
+        body.config = { requires: filteredRequires };
+      }
 
       const res = await fetch('/api/services', {
         method: 'POST',
@@ -158,6 +164,61 @@ export function CreateServiceForm() {
                   type="button"
                   variant="secondary"
                   onClick={() => setEnv(env.filter((_, j) => j !== i))}
+                >×</Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div className="text-xs text-(--color-muted) mb-2 flex items-start justify-between gap-4">
+          <div>
+            <div>Requires</div>
+            <p className="text-(--color-muted)/70 mt-0.5">
+              Spin up a managed Postgres or Redis sibling. Connection string is injected as{' '}
+              <code className="mono">&lt;NAME&gt;_URL</code> on this service.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setRequires([...requires, { kind: 'postgres', name: '' }])}
+            className="text-(--color-accent) hover:underline text-xs shrink-0"
+          >+ add</button>
+        </div>
+        {requires.length === 0 ? (
+          <div className="text-xs text-(--color-muted)/70 italic">No managed siblings</div>
+        ) : (
+          <div className="space-y-2">
+            {requires.map((row, i) => (
+              <div key={i} className="grid grid-cols-[140px_1fr_auto] gap-2">
+                <Select
+                  value={row.kind}
+                  onChange={(e) =>
+                    setRequires(
+                      requires.map((r, j) =>
+                        i === j ? { ...r, kind: e.target.value as RequireRow['kind'] } : r,
+                      ),
+                    )
+                  }
+                >
+                  <option value="postgres">postgres</option>
+                  <option value="redis">redis</option>
+                </Select>
+                <Input
+                  value={row.name}
+                  onChange={(e) =>
+                    setRequires(
+                      requires.map((r, j) => (i === j ? { ...r, name: e.target.value } : r)),
+                    )
+                  }
+                  placeholder="db"
+                  pattern="^[a-z0-9][a-z0-9-]*[a-z0-9]?$"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setRequires(requires.filter((_, j) => j !== i))}
                 >×</Button>
               </div>
             ))}
