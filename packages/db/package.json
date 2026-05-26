@@ -12,15 +12,14 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "migrate:up": "dbmate -d migrations up",
-    "migrate:down": "dbmate -d migrations down",
-    "migrate:status": "dbmate -d migrations status"
+    "migrate": "tsx scripts/migrate.ts"
   },
   "dependencies": {
     "kysely": "^0.27.4",
     "pg": "^8.13.1"
   },
   "devDependencies": {
-    "@types/pg": "^8.11.10"
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2"
   }
 }

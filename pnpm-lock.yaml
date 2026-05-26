@@ -161,6 +161,9 @@ importers:
       '@types/pg':
         specifier: ^8.11.10
         version: 8.20.0
+      tsx:
+        specifier: ^4.19.2
+        version: 4.22.3
 
   packages/docker:
     dependencies:

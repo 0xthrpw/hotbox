@@ -1,0 +1,21 @@
+name: hotbox-dev
+
+volumes:
+  hotbox-dev-pg: {}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_USER: hotbox
+      POSTGRES_PASSWORD: hotbox
+      POSTGRES_DB: hotbox
+    volumes:
+      - hotbox-dev-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "hotbox"]
+      interval: 5s
+      timeout: 3s

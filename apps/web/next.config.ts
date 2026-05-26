@@ -1,7 +1,10 @@
 import type { NextConfig } from 'next';
+import { join } from 'node:path';
 
 const config: NextConfig = {
   reactStrictMode: true,
+  output: 'standalone',
+  outputFileTracingRoot: join(import.meta.dirname, '..', '..'),
   transpilePackages: ['@hotbox/shared'],
   async rewrites() {
     return [
