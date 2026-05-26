@@ -80,7 +80,10 @@ export default async function ServiceDetailPage({ params }: { params: Promise<{ 
 
         <section>
           <h2 className="text-sm font-semibold mb-2 text-(--color-muted) uppercase tracking-wide">Logs</h2>
-          <LogViewer serviceId={data.service.id} />
+          <LogViewer
+            serviceId={data.service.id}
+            key={`${data.service.current_state}:${data.deployments[0]?.id ?? 'none'}`}
+          />
         </section>
 
         <section>
