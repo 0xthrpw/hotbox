@@ -29,7 +29,7 @@ export interface HostsTable {
   name: string;
   address: string;
   docker_socket: Generated<string>;
-  labels: Jsonb<Record<string, string>>;
+  labels: JsonbDef<Record<string, string>>;
   status: Generated<string>;
   last_seen_at: Timestamp | null;
   created_at: Generated<Timestamp>;
@@ -76,7 +76,7 @@ export interface ServicesTable {
   current_state: Generated<CurrentState>;
   hostname: string | null;
   public_port: number | null;
-  config: Jsonb<ServiceConfig>;
+  config: JsonbDef<ServiceConfig>;
   template: string | null;
   owner_id: string | null;
   parent_service_id: string | null;
@@ -92,8 +92,8 @@ export interface VolumeRef {
 }
 
 export interface NetworkRef {
-  network_id: string;
-  alias?: string;
+  name: string;
+  internal?: boolean;
 }
 
 export interface SecretRef {

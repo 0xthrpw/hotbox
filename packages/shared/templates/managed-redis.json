@@ -1,0 +1,24 @@
+{
+  "id": "managed-redis",
+  "label": "Managed Redis (7)",
+  "description": "Redis 7 sibling, internal-only, no auth (network is internal). Parent gets <name>_URL=redis://... injected as plain env.",
+  "containers": [
+    {
+      "role": "redis",
+      "image": "redis:7-alpine",
+      "env": {},
+      "volumes": [
+        { "name": "{svc}-data", "mountpoint": "/data" }
+      ],
+      "networks": [],
+      "ingress": false
+    }
+  ],
+  "volumes": [
+    { "name": "{svc}-data" }
+  ],
+  "networks": [],
+  "bootstrap": [],
+  "panels": [],
+  "tokenScopes": []
+}

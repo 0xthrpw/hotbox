@@ -7,6 +7,7 @@ import {
   interpolateTemplate,
   LABEL_MANAGED,
 } from '@hotbox/shared';
+import { open, type KeyRing } from '@hotbox/crypto';
 import { buildContainerCreateOptions, pullAndResolveDigest, type BuildContainerSpecInput } from '@hotbox/docker';
 
 export interface RolePlan {
@@ -117,6 +118,11 @@ export async function runBootstrap(
 /**
  * Build the dockerode container-create options for a role.
  * Caller layers labels (hotbox.* + traefik.*) on top of `baseLabels`.
+ *
+ * Networks: a role joins its template-declared networks PLUS any extras
+ * declared on the deployment (used by managed-sibling pattern to add the
+ * shared parent-child network). Aliases are set so that `<slug>` and
+ * `<slug>-<role>` are both reachable as DNS names on every joined network.
  */
 export function buildOptionsForRole(opts: {
   service: Service;
@@ -126,18 +132,27 @@ export function buildOptionsForRole(opts: {
   digest: string | null;
   baseLabels: Record<string, string>;
   version: number;
+  injectedEnv: Record<string, string>;     // decrypted secrets, merged last
 }): BuildContainerSpecInput {
   const name = `${opts.service.slug}-${opts.role}-v${opts.version}`;
+  const deploymentNetworks = opts.deployment.network_refs.map((n) => n.name);
+
+  const aliasesFor = (networks: string[]): Record<string, string[]> => {
+    const aliases = [opts.service.slug, `${opts.service.slug}-${opts.role}`];
+    const out: Record<string, string[]> = {};
+    for (const n of networks) out[n] = aliases;
+    return out;
+  };
 
   if (opts.container) {
-    // template-driven container
     const c = opts.container;
+    const networks = [...c.networks, ...deploymentNetworks];
     return {
       name,
       image: c.image,
       imageDigest: opts.digest,
       labels: opts.baseLabels,
-      env: { ...c.env, ...opts.deployment.env_snapshot },
+      env: { ...c.env, ...opts.deployment.env_snapshot, ...opts.injectedEnv },
       command: c.command,
       entrypoint: c.entrypoint,
       ports: c.ports.map((p) => ({
@@ -151,19 +166,21 @@ export function buildOptionsForRole(opts: {
         target: v.mountpoint,
         ro: v.ro,
       })),
-      networks: c.networks,
+      networks,
+      networkAliases: aliasesFor(networks),
       restartPolicy: opts.service.config.restart_policy ?? 'on-failure',
       stopGracePeriodSec: opts.service.config.stop_grace_period_sec ?? 30,
     };
   }
 
   // legacy non-template 'primary' role
+  const networks = deploymentNetworks;
   return {
     name,
     image: opts.deployment.image,
     imageDigest: opts.digest,
     labels: opts.baseLabels,
-    env: opts.deployment.env_snapshot,
+    env: { ...opts.deployment.env_snapshot, ...opts.injectedEnv },
     ports: opts.service.public_port
       ? [{ container: opts.service.public_port, protocol: 'tcp' }]
       : [],
@@ -172,7 +189,8 @@ export function buildOptionsForRole(opts: {
       target: v.mountpoint,
       ro: v.ro,
     })),
-    networks: opts.deployment.network_refs.map((n) => n.alias ?? n.network_id),
+    networks,
+    networkAliases: aliasesFor(networks),
     restartPolicy: opts.service.config.restart_policy ?? 'on-failure',
     stopGracePeriodSec: opts.service.config.stop_grace_period_sec ?? 30,
     healthcheck:
@@ -189,6 +207,54 @@ export function buildOptionsForRole(opts: {
           }
         : undefined,
   };
+}
+
+/**
+ * Decrypt the deployment's secret_refs through the keyring and return the
+ * map of env-var-name → plaintext. Only secrets with inject_as='env' are
+ * returned (file-mounts not yet supported).
+ */
+export async function decryptSecretEnv(
+  db: HotboxDb,
+  keyring: KeyRing,
+  refs: Deployment['secret_refs'],
+): Promise<Record<string, string>> {
+  const list = refs as unknown as Array<{ secret_id: string; inject_as?: string; key?: string }>;
+  if (!Array.isArray(list) || list.length === 0) return {};
+  const envRefs = list.filter((r) => (r.inject_as ?? 'env') === 'env');
+  if (envRefs.length === 0) return {};
+
+  const rows = await db
+    .selectFrom('secrets')
+    .select(['id', 'key', 'ciphertext', 'nonce', 'key_version'])
+    .where('id', 'in', envRefs.map((r) => r.secret_id))
+    .execute();
+
+  const out: Record<string, string> = {};
+  for (const ref of envRefs) {
+    const row = rows.find((r) => r.id === ref.secret_id);
+    if (!row) continue;
+    const plain = open(keyring, {
+      ciphertext: row.ciphertext,
+      nonce: row.nonce,
+      keyVersion: row.key_version,
+    });
+    out[ref.key ?? row.key] = plain;
+  }
+  return out;
+}
+
+/**
+ * Ensure all networks declared on a deployment exist, respecting the internal
+ * flag. Template-level networks are handled separately by ensureTemplateInfra.
+ */
+export async function ensureDeploymentInfra(
+  docker: Dockerode,
+  deployment: Deployment,
+): Promise<void> {
+  for (const n of deployment.network_refs) {
+    await ensureNetwork(docker, n.name, { internal: n.internal });
+  }
 }
 
 /**

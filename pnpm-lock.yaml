@@ -76,6 +76,9 @@ importers:
 
   apps/reconciler:
     dependencies:
+      '@hotbox/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@hotbox/db':
         specifier: workspace:*
         version: link:../../packages/db

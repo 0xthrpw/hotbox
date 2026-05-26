@@ -1,5 +1,6 @@
+import Link from 'next/link';
 import { apiFetch } from '@/lib/api';
-import type { ServiceDetail } from '@/lib/types';
+import type { ServiceDetail, ServiceListItem } from '@/lib/types';
 import { TopNav } from '@/components/nav';
 import { StatusPill } from '@/components/status-pill';
 import { LogViewer } from '@/components/log-viewer';
@@ -10,6 +11,7 @@ interface ServicePayload {
   service: ServiceDetail;
   deployments: Array<{ id: string; version: number; image: string; image_digest: string | null; status: string; created_at: string }>;
   containers: Array<{ id: string; docker_id: string; state: string; started_at: string | null }>;
+  siblings: ServiceListItem[];
 }
 
 export default async function ServiceDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -43,6 +45,36 @@ export default async function ServiceDetailPage({ params }: { params: Promise<{ 
             {panels.map((Panel, i) => (
               <Panel key={i} serviceId={data.service.id} serviceSlug={data.service.slug} />
             ))}
+          </section>
+        )}
+
+        {data.siblings.length > 0 && (
+          <section>
+            <h2 className="text-sm font-semibold mb-2 text-(--color-muted) uppercase tracking-wide">
+              Managed siblings
+            </h2>
+            <div className="border border-(--color-border) rounded overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-(--color-surface) text-(--color-muted)">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-medium">Slug</th>
+                    <th className="text-left px-3 py-2 font-medium">Kind</th>
+                    <th className="text-left px-3 py-2 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.siblings.map((s) => (
+                    <tr key={s.id} className="border-t border-(--color-border)">
+                      <td className="px-3 py-2">
+                        <Link href={`/services/${s.id}`} className="hover:underline mono text-xs">{s.slug}</Link>
+                      </td>
+                      <td className="px-3 py-2 mono text-xs text-(--color-muted)">{s.kind}</td>
+                      <td className="px-3 py-2"><StatusPill state={s.current_state} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </section>
         )}
 

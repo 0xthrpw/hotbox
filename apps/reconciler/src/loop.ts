@@ -1,5 +1,6 @@
 import type Dockerode from 'dockerode';
-import type { HotboxDb, Service, Deployment } from '@hotbox/db';
+import type { HotboxDb, Service, Deployment, CurrentState } from '@hotbox/db';
+import type { KeyRing } from '@hotbox/crypto';
 import {
   listManagedContainers,
   buildContainerCreateOptions,
@@ -11,8 +12,10 @@ import { traefikLabelsFor } from './traefik-labels.js';
 import {
   planRoles,
   ensureTemplateInfra,
+  ensureDeploymentInfra,
   ensureRoleDigest,
   buildOptionsForRole,
+  decryptSecretEnv,
   type RolePlan,
 } from './template-runner.js';
 
@@ -22,6 +25,7 @@ export interface ReconcilerOptions {
   db: HotboxDb;
   docker: Dockerode;
   hostId: string;
+  keyring: KeyRing;
   logger?: { info: (msg: string, meta?: unknown) => void; error: (msg: string, meta?: unknown) => void };
 }
 
@@ -29,6 +33,7 @@ export class Reconciler {
   private readonly db: HotboxDb;
   private readonly docker: Dockerode;
   private readonly hostId: string;
+  private readonly keyring: KeyRing;
   private readonly log: NonNullable<ReconcilerOptions['logger']>;
   private timer: NodeJS.Timeout | null = null;
   private eventsAbort: AbortController | null = null;
@@ -39,6 +44,7 @@ export class Reconciler {
     this.db = opts.db;
     this.docker = opts.docker;
     this.hostId = opts.hostId;
+    this.keyring = opts.keyring;
     this.log = opts.logger ?? { info: () => {}, error: () => {} };
   }
 
@@ -124,9 +130,77 @@ export class Reconciler {
 
     // Materialise networks, volumes, and bootstrap files (template only — no-op otherwise).
     await ensureTemplateInfra(this.docker, service);
+    // Networks declared on the deployment itself (used by managed-sibling pattern).
+    await ensureDeploymentInfra(this.docker, deployment);
 
     const plan = await planRoles(service, deployment);
     await this.applyPlan(service, deployment, plan, observed);
+    await this.observeHealth(service, deployment);
+  }
+
+  /**
+   * After containers are in their target state, inspect each one that belongs
+   * to the active deployment and roll up an aggregate current_state:
+   *
+   *   any container exited with non-zero code (and not restarting)  → failed
+   *   any container's Health.Status is unhealthy                    → degraded
+   *   any container is creating / restarting / Health=starting      → starting
+   *   otherwise                                                     → running
+   *
+   * Inspect is one round-trip per container — at our scale (a few services
+   * × 1-3 roles each, every 5s) the cost is negligible.
+   */
+  private async observeHealth(service: Service, deployment: Deployment): Promise<void> {
+    const rows = await this.db
+      .selectFrom('containers')
+      .select(['docker_id'])
+      .where('deployment_id', '=', deployment.id)
+      .execute();
+
+    if (rows.length === 0) {
+      await this.db.updateTable('services').set({ current_state: 'pending' }).where('id', '=', service.id).execute();
+      return;
+    }
+
+    let aggregate: CurrentState = 'running';
+    const rank: Record<CurrentState, number> = {
+      pending: 0,
+      stopped: 0,
+      running: 1,
+      starting: 2,
+      creating: 2,
+      degraded: 3,
+      failed: 4,
+    };
+    const escalate = (next: CurrentState) => {
+      if (rank[next] > rank[aggregate]) aggregate = next;
+    };
+
+    for (const row of rows) {
+      try {
+        const inspect = await this.docker.getContainer(row.docker_id).inspect();
+        const s = inspect.State;
+        if ((s.Status === 'exited' || s.Status === 'dead') && (s.ExitCode ?? 0) !== 0) {
+          escalate('failed');
+          continue;
+        }
+        if (s.Status === 'created' || s.Status === 'restarting') {
+          escalate('starting');
+        }
+        const h = (s as { Health?: { Status?: string } }).Health;
+        if (h?.Status === 'unhealthy') escalate('degraded');
+        else if (h?.Status === 'starting') escalate('starting');
+      } catch (err) {
+        // container vanished between list and inspect — next tick handles it
+        this.log.error('inspect failed', err);
+      }
+    }
+
+    await this.db
+      .updateTable('services')
+      .set({ current_state: aggregate })
+      .where('id', '=', service.id)
+      .execute();
   }
 
   private async applyPlan(
@@ -202,6 +276,8 @@ export class Reconciler {
       ...traefikLabelsFor({ service, container: item.container }),
     };
 
+    const injectedEnv = await decryptSecretEnv(this.db, this.keyring, deployment.secret_refs);
+
     const buildInput = buildOptionsForRole({
       service,
       deployment,
@@ -210,6 +286,7 @@ export class Reconciler {
       digest,
       baseLabels,
       version: deployment.version,
+      injectedEnv,
     });
 
     const options = buildContainerCreateOptions(buildInput);
