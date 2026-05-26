@@ -149,7 +149,9 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.post('/services/:id/deployments', async (req, reply) => {
     requireAuth(req);
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
-    const input = CreateDeploymentInputSchema.parse(req.body);
+    // Redeploy from the UI sends no body; all fields are optional, treat
+    // missing body as the empty object so Zod doesn't reject `null`.
+    const input = CreateDeploymentInputSchema.parse(req.body ?? {});
     const svc = await fastify.ctx.db
       .selectFrom('services')
       .selectAll()
