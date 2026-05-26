@@ -1,0 +1,83 @@
+name: hotbox-stack
+
+networks:
+  hotbox-public:
+    name: hotbox-public
+
+volumes:
+  hotbox-pg-data: {}
+  traefik-acme: {}
+
+services:
+  traefik:
+    image: traefik:v3.2
+    restart: unless-stopped
+    networks: [hotbox-public]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ACME_EMAIL: "${ACME_EMAIL}"
+      HOTBOX_WEB_HOST: "${HOTBOX_WEB_HOST}"
+      HOTBOX_API_HOST: "${HOTBOX_API_HOST}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
+      - traefik-acme:/etc/traefik/acme
+
+  hotbox-pg:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    networks: [hotbox-public]
+    environment:
+      POSTGRES_USER: hotbox
+      POSTGRES_PASSWORD: "${HOTBOX_PG_PASSWORD}"
+      POSTGRES_DB: hotbox
+    volumes:
+      - hotbox-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "hotbox"]
+      interval: 10s
+      timeout: 5s
+
+  hotbox-api:
+    image: ghcr.io/${HOTBOX_REPO}/hotbox-api:${HOTBOX_VERSION}
+    restart: unless-stopped
+    depends_on:
+      hotbox-pg:
+        condition: service_healthy
+    networks: [hotbox-public]
+    environment:
+      DATABASE_URL: "postgres://hotbox:${HOTBOX_PG_PASSWORD}@hotbox-pg:5432/hotbox"
+      HOST_ID: "${HOTBOX_HOST_ID}"
+      HOTBOX_MASTER_KEY_PATH: /etc/hotbox/master.key
+      WEB_ORIGIN: "https://${HOTBOX_WEB_HOST}"
+      PORT: "3000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/hotbox/master.key:/etc/hotbox/master.key:ro
+    labels:
+      hotbox.managed: "true"  # so traefik docker provider sees it
+
+  hotbox-web:
+    image: ghcr.io/${HOTBOX_REPO}/hotbox-web:${HOTBOX_VERSION}
+    restart: unless-stopped
+    depends_on: [hotbox-api]
+    networks: [hotbox-public]
+    environment:
+      HOTBOX_API_URL: "http://hotbox-api:3000"
+      PORT: "3000"
+    labels:
+      hotbox.managed: "true"
+
+  hotbox-metrics-scraper:
+    image: ghcr.io/${HOTBOX_REPO}/hotbox-metrics-scraper:${HOTBOX_VERSION}
+    restart: unless-stopped
+    depends_on:
+      hotbox-pg:
+        condition: service_healthy
+    networks: [hotbox-public]
+    environment:
+      DATABASE_URL: "postgres://hotbox:${HOTBOX_PG_PASSWORD}@hotbox-pg:5432/hotbox"
+      HOST_ID: "${HOTBOX_HOST_ID}"

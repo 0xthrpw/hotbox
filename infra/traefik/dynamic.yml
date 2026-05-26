@@ -1,0 +1,36 @@
+http:
+  middlewares:
+    hotbox-auth:
+      forwardAuth:
+        address: "http://hotbox-api:3000/internal/authz"
+        authResponseHeaders:
+          - "x-hotbox-token-id"
+          - "x-hotbox-token-tier"
+          - "x-hotbox-token-scopes"
+          - "x-hotbox-service-id"
+        trustForwardHeader: true
+
+  routers:
+    hotbox-web:
+      rule: "Host(`${HOTBOX_WEB_HOST}`)"
+      entryPoints: [websecure]
+      service: hotbox-web
+      tls:
+        certResolver: le
+
+    hotbox-api:
+      rule: "Host(`${HOTBOX_API_HOST}`)"
+      entryPoints: [websecure]
+      service: hotbox-api
+      tls:
+        certResolver: le
+
+  services:
+    hotbox-web:
+      loadBalancer:
+        servers:
+          - url: "http://hotbox-web:3000"
+    hotbox-api:
+      loadBalancer:
+        servers:
+          - url: "http://hotbox-api:3000"
