@@ -50,6 +50,14 @@ export const ContainerSpecSchema = z.object({
     )
     .default([]),
   networks: z.array(z.string()).default([]),
+  /** This container receives ingress traffic when the service has a hostname. */
+  ingress: z.boolean().default(false),
+  /**
+   * If set, Traefik routes the service's hostname to the named file-provider
+   * service (e.g. 'hotbox-rpc-proxy@file') instead of this container directly.
+   * The proxy is responsible for forwarding to this container.
+   */
+  ingress_via: z.string().optional(),
 });
 export type ContainerSpec = z.infer<typeof ContainerSpecSchema>;
 
@@ -74,10 +82,17 @@ export const TemplateSchema = z.object({
       }),
     )
     .default([]),
-  /** Files generated on first deploy (e.g. jwt.hex). Run-once. */
+  /**
+   * Files generated on first deploy (e.g. jwt.hex). Idempotent — bootstrap
+   * runs every reconcile but the underlying script no-ops if the file exists.
+   *
+   * `volume` names a template volume; the bootstrap container mounts it at /v
+   * and writes /v/{path}.
+   */
   bootstrap: z
     .array(
       z.object({
+        volume: z.string(),
         path: z.string(),
         kind: z.enum(['random_hex', 'random_bytes']),
         size: z.number().int().positive(),

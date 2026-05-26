@@ -81,3 +81,17 @@ services:
     environment:
       DATABASE_URL: "postgres://hotbox:${HOTBOX_PG_PASSWORD}@hotbox-pg:5432/hotbox"
       HOST_ID: "${HOTBOX_HOST_ID}"
+
+  # Single shared rpc-proxy: receives all token-authenticated RPC traffic, looks
+  # up the upstream Erigon based on the x-hotbox-service-id header from
+  # ForwardAuth, forwards, logs each call to rpc_requests.
+  hotbox-rpc-proxy:
+    image: ghcr.io/${HOTBOX_REPO}/hotbox-rpc-proxy:${HOTBOX_VERSION}
+    restart: unless-stopped
+    depends_on:
+      hotbox-pg:
+        condition: service_healthy
+    networks: [hotbox-public]
+    environment:
+      DATABASE_URL: "postgres://hotbox:${HOTBOX_PG_PASSWORD}@hotbox-pg:5432/hotbox"
+      PORT: "9090"

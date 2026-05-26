@@ -4,6 +4,7 @@ import { createDockerClient } from '@hotbox/docker';
 import { Reconciler } from '@hotbox/reconciler';
 import { loadMasterKey } from '@hotbox/crypto';
 import { buildServer } from './server.js';
+import { Aggregator } from './aggregator.js';
 
 async function main(): Promise<void> {
   const dbUrl = required('DATABASE_URL');
@@ -23,6 +24,9 @@ async function main(): Promise<void> {
   });
   reconciler.start();
 
+  const aggregator = new Aggregator(db, { info: console.log, error: console.error });
+  aggregator.start();
+
   const app = await buildServer({ db, docker, reconciler, keyring, hostId });
 
   await app.listen({ host: '0.0.0.0', port });
@@ -32,6 +36,7 @@ async function main(): Promise<void> {
     process.on(sig, async () => {
       app.log.info(`got ${sig}, shutting down`);
       reconciler.stop();
+      aggregator.stop();
       await app.close();
       await db.destroy();
       process.exit(0);

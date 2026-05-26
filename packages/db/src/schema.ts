@@ -109,6 +109,7 @@ export interface DeploymentsTable {
   version: number;
   image: string;
   image_digest: string | null;
+  container_digests: JsonbDef<Record<string, string>>;
   env_snapshot: JsonbDef<Record<string, string>>;
   secret_refs: JsonbDef<SecretRef[]>;
   volume_refs: JsonbDef<VolumeRef[]>;
