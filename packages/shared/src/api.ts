@@ -55,7 +55,8 @@ export const CreateServiceInputSchema = z.object({
 export type CreateServiceInput = z.infer<typeof CreateServiceInputSchema>;
 
 export const CreateDeploymentInputSchema = z.object({
-  image: z.string().min(1),
+  /** Optional — defaults to the previous deployment's image (= redeploy). */
+  image: z.string().min(1).optional(),
   env: z.record(z.string()).optional(),
 });
 export type CreateDeploymentInput = z.infer<typeof CreateDeploymentInputSchema>;
