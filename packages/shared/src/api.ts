@@ -32,7 +32,16 @@ export const ServiceConfigSchema = z.object({
   healthcheck: HealthcheckSchema.optional(),
   stop_grace_period_sec: z.number().int().positive().default(30),
   requires: z
-    .array(z.object({ kind: z.enum(['postgres', 'redis']), name: z.string() }))
+    .array(
+      z.object({
+        kind: z.enum(['postgres', 'redis']),
+        name: z
+          .string()
+          .min(1)
+          .max(30)
+          .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]?$/, 'lowercase, alphanumerics and dashes'),
+      }),
+    )
     .default([]),
 });
 
