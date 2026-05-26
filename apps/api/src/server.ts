@@ -10,6 +10,8 @@ import { logsRoutes } from './routes/logs.js';
 import { driftRoutes } from './routes/drift.js';
 import { internalAuthzRoutes } from './routes/internal-authz.js';
 import { metricsRoutes } from './routes/metrics.js';
+import { templatesRoutes } from './routes/templates.js';
+import { auditRoutes } from './routes/audit.js';
 
 export async function buildServer(ctx: AppContext): Promise<FastifyInstance> {
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } });
@@ -38,6 +40,8 @@ export async function buildServer(ctx: AppContext): Promise<FastifyInstance> {
     await logsRoutes(instance);
     await driftRoutes(instance);
     await metricsRoutes(instance);
+    await templatesRoutes(instance);
+    await auditRoutes(instance);
   }, { prefix: '/api' });
 
   // Internal routes used by Traefik ForwardAuth — no /api prefix, no session.

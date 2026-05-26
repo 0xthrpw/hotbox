@@ -3,6 +3,7 @@ import type { ServiceDetail } from '@/lib/types';
 import { TopNav } from '@/components/nav';
 import { StatusPill } from '@/components/status-pill';
 import { LogViewer } from '@/components/log-viewer';
+import { ServiceActions } from '@/components/service-actions';
 import { resolvePanels } from '@/panels/registry';
 
 interface ServicePayload {
@@ -20,17 +21,21 @@ export default async function ServiceDetailPage({ params }: { params: Promise<{ 
     <>
       <TopNav />
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
-        <header className="flex items-center justify-between">
+        <header className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-lg font-semibold flex items-center gap-3">
               <StatusPill state={data.service.current_state} />
               {data.service.slug}
             </h1>
             <p className="text-(--color-muted) text-sm">{data.service.name}</p>
+            <p className="text-xs text-(--color-muted) mono mt-1">
+              {data.service.hostname ? `${data.service.hostname}:${data.service.public_port ?? '—'}` : 'no ingress'}
+            </p>
           </div>
-          <div className="text-xs text-(--color-muted) mono">
-            {data.service.hostname ? `${data.service.hostname}:${data.service.public_port ?? '—'}` : 'no ingress'}
-          </div>
+          <ServiceActions
+            serviceId={data.service.id}
+            desiredState={data.service.desired_state}
+          />
         </header>
 
         {panels.length > 0 && (

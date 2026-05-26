@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { CreateTokenInputSchema } from '@hotbox/shared';
 import { issueToken } from '../tokens.js';
 import { requireAuth } from './auth.js';
+import { recordAudit } from '../audit.js';
 
 export async function tokensRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/tokens', async (req) => {
@@ -32,6 +33,12 @@ export async function tokensRoutes(fastify: FastifyInstance): Promise<void> {
       rateLimitPerMin: input.rate_limit_per_min,
       expiresAt: input.expires_at ? new Date(input.expires_at) : undefined,
     });
+    await recordAudit(fastify.ctx.db, req, {
+      action: 'token.create',
+      target_kind: 'token',
+      target_id: issued.id,
+      payload: { name: input.name, kind: input.kind, tier: input.tier, service_id: input.service_id },
+    });
     return reply.code(201).send({ id: issued.id, token: issued.plain, prefix: issued.prefix });
   });
 
@@ -43,6 +50,11 @@ export async function tokensRoutes(fastify: FastifyInstance): Promise<void> {
       .set({ revoked_at: new Date() })
       .where('id', '=', id)
       .execute();
+    await recordAudit(fastify.ctx.db, req, {
+      action: 'token.revoke',
+      target_kind: 'token',
+      target_id: id,
+    });
     return reply.send({ ok: true });
   });
 }
