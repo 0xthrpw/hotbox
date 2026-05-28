@@ -177,11 +177,31 @@ export interface NetworksTable {
   created_at: Generated<Timestamp>;
 }
 
-export interface EnvVarsTable {
+export type VariableScope = 'project' | 'environment' | 'service';
+
+/**
+ * A user-managed env variable scoped to a project, environment, or service.
+ * Exactly one of (project_id, environment_id, service_id) is non-null —
+ * enforced by a CHECK constraint. Resolution merges project → env → service
+ * (last wins) via resolveVariables().
+ *
+ * Plain values live in `value`; secrets in (ciphertext, nonce, key_version)
+ * — the CHECK enforces exactly one of those shapes is populated. The secrets
+ * table is kept separate: it stores the *internal* sibling-wiring secrets
+ * (managed-pg passwords, parent-to-sibling connection strings), which have
+ * different lifecycle and aren't user-managed.
+ */
+export interface VariablesTable {
   id: Generated<string>;
-  service_id: string;
+  project_id: string | null;
+  environment_id: string | null;
+  service_id: string | null;
+  scope: VariableScope;
   key: string;
-  value: string;
+  value: string | null;
+  ciphertext: Buffer | null;
+  nonce: Buffer | null;
+  key_version: number | null;
   is_secret: Generated<boolean>;
   created_at: Generated<Timestamp>;
   updated_at: Generated<Timestamp>;
@@ -271,7 +291,7 @@ export interface Database {
   containers: ContainersTable;
   volumes: VolumesTable;
   networks: NetworksTable;
-  env_vars: EnvVarsTable;
+  variables: VariablesTable;
   secrets: SecretsTable;
   tokens: TokensTable;
   audit_log: AuditLogTable;
@@ -306,3 +326,6 @@ export type NewDeployment = Insertable<DeploymentsTable>;
 export type Container = Selectable<ContainersTable>;
 export type Token = Selectable<TokensTable>;
 export type Secret = Selectable<SecretsTable>;
+export type Variable = Selectable<VariablesTable>;
+export type NewVariable = Insertable<VariablesTable>;
+export type VariableUpdate = Updateable<VariablesTable>;

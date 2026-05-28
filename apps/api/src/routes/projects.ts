@@ -5,9 +5,13 @@ import {
   CreateEnvironmentInputSchema,
   DuplicateEnvironmentInputSchema,
 } from '@hotbox/shared';
+import { seal, open } from '@hotbox/crypto';
+import type { HotboxDb, Variable } from '@hotbox/db';
+import type { KeyRing } from '@hotbox/crypto';
 import { requireAuth } from './auth.js';
 import { recordAudit } from '../audit.js';
 import { createSiblings } from './services.js';
+import { resolveVariables } from '../lib/resolve-variables.js';
 
 export async function projectsRoutes(fastify: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
@@ -244,6 +248,11 @@ export async function projectsRoutes(fastify: FastifyInstance): Promise<void> {
       .returningAll()
       .executeTakeFirstOrThrow();
 
+    // Env-scoped variables on the source env → the new env. Done before the
+    // per-service loop so resolveVariables() sees them when each new service
+    // builds its initial env_snapshot.
+    await copyVariablesToEnvScope(fastify.ctx.db, fastify.ctx.keyring, envId, newEnv.id);
+
     const newServiceIds: string[] = [];
     for (const src of sourceServices) {
       const latest = await fastify.ctx.db
@@ -274,9 +283,9 @@ export async function projectsRoutes(fastify: FastifyInstance): Promise<void> {
       newServiceIds.push(newSvc.id);
 
       // Re-mint managed siblings in the new env (fresh passwords + secrets).
-      // Plain env vars (latest.env_snapshot) carry through verbatim so the new
-      // service starts with the same configuration; the only thing that
-      // changes is the wiring to its siblings.
+      // Service-scoped variables are copied below; project-scoped vars live
+      // on the (unchanged) project and apply automatically; env-scoped vars
+      // are duplicated once at the env level outside this loop.
       const requires = (src.config?.requires as
         | NonNullable<typeof src.config>['requires']
         | undefined) ?? [];
@@ -306,10 +315,17 @@ export async function projectsRoutes(fastify: FastifyInstance): Promise<void> {
         for (const sid of sibling.siblingIds) newServiceIds.push(sid);
       }
 
-      const envSnapshot = {
-        ...(latest.env_snapshot as Record<string, string>),
-        ...sibling.parentExtraEnv,
-      };
+      // Service-scoped variables from the source service → the new service.
+      // Secrets are re-sealed (fresh nonce per row) so the duplicate's rows
+      // are cryptographically independent even when they carry the same
+      // plaintext.
+      await copyVariablesToServiceScope(fastify.ctx.db, fastify.ctx.keyring, src.id, newSvc.id);
+
+      // Build env_snapshot from the merged variable map — same resolution
+      // logic that runs on every deploy — then layer sibling-injected
+      // plain env on top (matches the service-create flow).
+      const resolved = await resolveVariables(fastify.ctx.db, fastify.ctx.keyring, newSvc.id);
+      const envSnapshot = { ...resolved, ...sibling.parentExtraEnv };
       await fastify.ctx.db
         .insertInto('deployments')
         .values({
@@ -341,6 +357,8 @@ export async function projectsRoutes(fastify: FastifyInstance): Promise<void> {
     for (const sid of newServiceIds) fastify.ctx.reconciler.reconcileSoon(sid);
     return { environment: newEnv, services_created: newServiceIds };
   });
+
+  // Copy helpers live at module scope below.
 
   fastify.delete('/projects/:id/environments/:envId', async (req, reply) => {
     requireAuth(req);
@@ -386,4 +404,86 @@ export async function projectsRoutes(fastify: FastifyInstance): Promise<void> {
     });
     return reply.send({ ok: true });
   });
+}
+
+/**
+ * Re-seal a variable row's value under a fresh nonce. For plain variables
+ * this is a copy; for secret variables this decrypts and re-seals so the
+ * copy is cryptographically independent from the source (different nonce,
+ * same plaintext — XChaCha20-Poly1305 doesn't require unique nonces across
+ * different plaintexts, but a fresh nonce keeps the per-row ciphertext
+ * unique in case the same secret value diverges later).
+ */
+function rekeyValueFields(row: Variable, keyring: KeyRing): {
+  value: string | null;
+  ciphertext: Buffer | null;
+  nonce: Buffer | null;
+  key_version: number | null;
+} {
+  if (!row.is_secret) return { value: row.value, ciphertext: null, nonce: null, key_version: null };
+  if (!row.ciphertext || !row.nonce || row.key_version === null) {
+    throw new Error('secret variable row missing ciphertext/nonce/key_version');
+  }
+  const plain = open(keyring, {
+    ciphertext: row.ciphertext,
+    nonce: row.nonce,
+    keyVersion: row.key_version,
+  });
+  const sealed = seal(keyring, plain);
+  return {
+    value: null,
+    ciphertext: sealed.ciphertext,
+    nonce: sealed.nonce,
+    key_version: sealed.keyVersion,
+  };
+}
+
+async function copyVariablesToEnvScope(
+  db: HotboxDb,
+  keyring: KeyRing,
+  sourceEnvId: string,
+  targetEnvId: string,
+): Promise<void> {
+  const rows = await db
+    .selectFrom('variables')
+    .selectAll()
+    .where('environment_id', '=', sourceEnvId)
+    .execute();
+  for (const row of rows) {
+    const payload = rekeyValueFields(row, keyring);
+    await db.insertInto('variables').values({
+      environment_id: targetEnvId,
+      project_id: null,
+      service_id: null,
+      scope: 'environment',
+      key: row.key,
+      is_secret: row.is_secret,
+      ...payload,
+    }).execute();
+  }
+}
+
+async function copyVariablesToServiceScope(
+  db: HotboxDb,
+  keyring: KeyRing,
+  sourceServiceId: string,
+  targetServiceId: string,
+): Promise<void> {
+  const rows = await db
+    .selectFrom('variables')
+    .selectAll()
+    .where('service_id', '=', sourceServiceId)
+    .execute();
+  for (const row of rows) {
+    const payload = rekeyValueFields(row, keyring);
+    await db.insertInto('variables').values({
+      service_id: targetServiceId,
+      project_id: null,
+      environment_id: null,
+      scope: 'service',
+      key: row.key,
+      is_secret: row.is_secret,
+      ...payload,
+    }).execute();
+  }
 }

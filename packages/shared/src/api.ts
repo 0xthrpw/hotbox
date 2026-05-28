@@ -109,3 +109,34 @@ export const LoginInputSchema = z.object({
   password: z.string().min(8),
 });
 export type LoginInput = z.infer<typeof LoginInputSchema>;
+
+// POSIX env var name: letter or underscore, then letters/digits/underscores.
+// We deliberately reject lowercase to head off accidental Foo=bar entries
+// that would shadow uppercase ones; container env is case-sensitive but
+// almost everything uses SCREAMING_SNAKE_CASE by convention.
+const EnvVarKeySchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Z_][A-Z0-9_]*$/, 'UPPERCASE letters, digits, underscores; cannot start with a digit');
+
+export const VariableScopeSchema = z.enum(['project', 'environment', 'service']);
+export type VariableScope = z.infer<typeof VariableScopeSchema>;
+
+export const CreateVariableInputSchema = z
+  .object({
+    key: EnvVarKeySchema,
+    value: z.string().max(64 * 1024),
+    is_secret: z.boolean().default(false),
+  });
+export type CreateVariableInput = z.infer<typeof CreateVariableInputSchema>;
+
+export const UpdateVariableInputSchema = z
+  .object({
+    value: z.string().max(64 * 1024).optional(),
+    is_secret: z.boolean().optional(),
+  })
+  .refine((v) => v.value !== undefined || v.is_secret !== undefined, {
+    message: 'must update at least one field',
+  });
+export type UpdateVariableInput = z.infer<typeof UpdateVariableInputSchema>;

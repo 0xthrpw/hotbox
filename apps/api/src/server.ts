@@ -6,6 +6,7 @@ import type { AppContext } from './context.js';
 import { attachSession, authRoutes } from './routes/auth.js';
 import { servicesRoutes } from './routes/services.js';
 import { projectsRoutes } from './routes/projects.js';
+import { variablesRoutes } from './routes/variables.js';
 import { tokensRoutes } from './routes/tokens.js';
 import { logsRoutes } from './routes/logs.js';
 import { driftRoutes } from './routes/drift.js';
@@ -37,6 +38,7 @@ export async function buildServer(ctx: AppContext): Promise<FastifyInstance> {
     await attachSession(instance);
     await authRoutes(instance);
     await projectsRoutes(instance);
+    await variablesRoutes(instance);
     await servicesRoutes(instance);
     await tokensRoutes(instance);
     await logsRoutes(instance);
