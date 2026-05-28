@@ -12,6 +12,8 @@ RUN pnpm install --frozen-lockfile
 
 FROM node:22-alpine AS runtime
 WORKDIR /app
+# git: the build worker shallow-clones public repos before building them.
+RUN apk add --no-cache git
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 ENV NODE_ENV=production
 COPY --from=build /app /app

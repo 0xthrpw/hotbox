@@ -348,3 +348,41 @@ New `docs/AUTO_SUBDOMAINS.md` walks through the Cloudflare side (zone delegation
 
 Files: `packages/db/migrations/20260620000001_auto_subdomain.sql`, `packages/db/src/schema.ts` (added `auto_subdomain` to ServicesTable), `packages/shared/src/api.ts` (`auto_subdomain` on `CreateServiceInputSchema`, new `UpdateIngressInputSchema`), `infra/traefik/traefik.yml` (le-http + le-dns resolvers, removed YAML email literal), `infra/compose.hotbox.yml` (ACME email env vars per resolver, CLOUDFLARE_DNS_API_TOKEN, HOTBOX_AUTO_SUBDOMAIN_BASE on hotbox-api, le-http on control-plane router labels), `apps/api/src/context.ts` (autoSubdomainBase), `apps/api/src/main.ts` (reads HOTBOX_AUTO_SUBDOMAIN_BASE), `apps/reconciler/src/loop.ts` (passes autoSubdomainBase down), `apps/reconciler/src/traefik-labels.ts` (rewrite: two routers per service), `apps/api/src/routes/internal-authz.ts` (accepts auto subdomain), `apps/api/src/routes/services.ts` (PATCH /ingress, auto_subdomain in select + create), `apps/api/src/routes/meta.ts` (new), `apps/api/src/server.ts` (registered metaRoutes), `apps/web/src/lib/types.ts` (auto_subdomain on ServiceListItem), `apps/web/src/components/ingress-editor.tsx` (new), `apps/web/src/app/services/new/create-service-form.tsx` (auto subdomain checkbox + preview), `apps/web/src/app/services/[id]/page.tsx` (mounts IngressEditor). Docs: new `docs/AUTO_SUBDOMAINS.md`. Tests: `apps/reconciler/tests/traefik-labels.test.ts` extended.
 
+---
+
+## Phase 4a — GitHub build-on-host (public repos)
+
+First half of the GitHub auto-deploy feature. A service can be created from a **public** `repo:branch`; hotbox shallow-clones it, builds the image on the host, and deploys. **Deliberately scoped to public repos + manual/first-deploy builds** — webhook auto-deploy and GitHub App install tokens (for private repos) are Phase 4b. The split was driven by testability: webhooks need a public inbound endpoint the LAN trial box can't receive, whereas build-on-host is fully testable there via a manual "Rebuild" button.
+
+### What shipped
+
+**Schema.** New migration `20260628000001_github_build.sql`: `services.image_source` ('image'|'github', default 'image'), a `github_sources` table (one row per github service: repo_full_name, branch, dockerfile_path, build_context, last_built_sha, plus an unused `webhook_secret` column reserved for 4b), and a `builds` table (status machine queued→cloning→building→deploying→success/failed, commit metadata, image_tag/digest, captured `log` text, error_message, timings). No `github_installations` table yet (no App in 4a).
+
+**Build worker.** New `apps/api/src/build-worker.ts`, an in-process loop alongside the reconciler/aggregator (heavy lifting is in the Docker daemon + a git subprocess, so it doesn't block the event loop). Serial — one build at a time, queue depth visible in the builds table. Per build: shallow `git clone --depth 1 --single-branch` (execFile, no shell — branch is also regex-guarded against leading-dash flag injection) → read sha/message/author → `buildImageFromDir` tagging `hotbox-local/<proj>-<env>-<slug>:<shortsha>` → inspect for image id → create a deployment (env_snapshot from `resolveVariables`, wiring carried forward from the previous deployment) → `reconcileSoon`. Build output is captured into `builds.log` (capped at 256 KB). Failures set status=failed + error_message and keep the log; the service stays on its previous deployment. Temp clone dirs are always cleaned up.
+
+**Local-image build primitive.** New `packages/docker/src/build.ts`: `buildImageFromDir(docker, {contextDir, dockerfile, tag, onLog})` tars the context with `tar-fs` and streams to `docker.buildImage`, surfacing daemon-side build errors (which arrive as stream entries, not thrown errors). Exports `LOCAL_IMAGE_PREFIX` + `isLocalImage()`.
+
+**Reconciler integration.** `ensureRoleDigest` now returns `string | null` and short-circuits to null for `hotbox-local/` images — there's no registry to pull from, and the image is pinned by its unique `:<sha>` tag, so the container is created against the tag directly (no `@digest`).
+
+**Routes.** `POST /api/services` branches on `image_source`: for github it creates the service + variable rows + a `github_sources` row + a queued `first-deploy` build, kicks the worker, and returns *without* a deployment (the worker creates it on success; the service sits in `pending` until then). New `GET /services/:id/builds` (list, log omitted), `GET /services/:id/builds/:buildId` (detail incl log), `POST /services/:id/builds` (manual rebuild → enqueue + kick). Service detail response includes `github_source`.
+
+**Frontend.** Create form gets a Source toggle [Image registry | GitHub repo]; github mode swaps the image/template/requires fields for repo/branch/dockerfile/context inputs. Service detail page gets a Builds section (new `builds-panel.tsx`) for github services: repo@branch header, "Rebuild from latest" button, a build table with live-polling status while a build is in flight, and expandable per-build logs.
+
+**Image runtime.** `apps/api/Dockerfile` runtime stage adds `apk add --no-cache git` for the clone step. `tar-fs` ships via node_modules.
+
+### Deliberate limitations (recorded for Phase 4b)
+
+- **Public repos only.** No credentials on the clone. Private org repos need the GitHub App install-token path (Phase 4b).
+- **No webhook auto-deploy.** Pushes don't trigger builds yet — manual Rebuild only. Webhooks need the public endpoint (Hetzner).
+- **No managed siblings on github services.** `config.requires` is rejected for github sources (the sibling wiring would have to attach to a not-yet-built first deployment). Run the dependency as its own service and wire it via a Phase 2 variable (e.g. `DATABASE_URL`).
+- **`.dockerignore` not honored** — `tar-fs` packs the whole build context. Keep build contexts lean; a follow-up can parse `.dockerignore`.
+- **Build-cache growth.** Each build leaves layers in the daemon's storage; no automatic prune yet. Watch disk on the box; `docker builder prune` manually if needed.
+- **Build logs are ephemeral-ish.** Stored in the DB row (survives container restart), but only persisted at terminal states — a crash mid-build loses the in-progress log.
+
+### Verification
+
+- 90 unit tests pass (`pnpm test`) — new: github-source schema validation (image optional for github, github required, repo regex, branch flag-injection guard, requires rejected) and `isLocalImage` prefix detection. Typecheck clean across 9 packages; web build clean.
+- Testable on the trial box: create a service from a small public repo with a Dockerfile, watch the build stream in the Builds panel, confirm it deploys and goes healthy, hit Rebuild to cut a new build. Variables set at project/env/service scope flow into the built container's env (resolveVariables runs at deploy time).
+
+Files: `packages/db/migrations/20260628000001_github_build.sql`, `packages/db/src/schema.ts` (`GithubSourcesTable`, `BuildsTable`, `image_source` on ServicesTable, `ImageSource`/`BuildStatus`), `packages/shared/src/api.ts` (`ImageSourceSchema`, `GithubSourceInputSchema`, reworked `CreateServiceInputSchema` with refines), `packages/docker/src/build.ts` (new) + `package.json` (tar-fs), `apps/reconciler/src/template-runner.ts` (local-image skip), `apps/api/src/build-worker.ts` (new), `apps/api/src/context.ts` + `main.ts` (BuildWorker wired), `apps/api/src/routes/services.ts` (github create branch + build routes + github_source in detail), `apps/api/Dockerfile` (git), `apps/web/src/lib/types.ts` (ImageSource, Build, GithubSource), `apps/web/src/components/builds-panel.tsx` (new), `apps/web/src/app/services/new/create-service-form.tsx` (source toggle), `apps/web/src/app/services/[id]/page.tsx` (Builds section). Tests: `packages/shared/tests/api-schemas.test.ts` (extended), `packages/docker/tests/build.test.ts` (new). Deferred scope tracked in the `github-deploy-private-repos-todo` memory.
+

@@ -2,11 +2,13 @@ import type Dockerode from 'dockerode';
 import type { HotboxDb } from '@hotbox/db';
 import type { Reconciler } from '@hotbox/reconciler';
 import type { KeyRing } from '@hotbox/crypto';
+import type { BuildWorker } from './build-worker.js';
 
 export interface AppContext {
   db: HotboxDb;
   docker: Dockerode;
   reconciler: Reconciler;
+  buildWorker: BuildWorker;
   keyring: KeyRing;
   hostId: string;
   /**

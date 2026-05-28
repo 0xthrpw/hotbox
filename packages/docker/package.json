@@ -14,9 +14,11 @@
   },
   "dependencies": {
     "@hotbox/shared": "workspace:*",
-    "dockerode": "^4.0.2"
+    "dockerode": "^4.0.2",
+    "tar-fs": "^3.0.6"
   },
   "devDependencies": {
-    "@types/dockerode": "^3.3.32"
+    "@types/dockerode": "^3.3.32",
+    "@types/tar-fs": "^2.0.4"
   }
 }

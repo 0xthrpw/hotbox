@@ -35,7 +35,12 @@ export function CreateServiceForm() {
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
   const [template, setTemplate] = useState('');
+  const [imageSource, setImageSource] = useState<'image' | 'github'>('image');
   const [image, setImage] = useState('');
+  const [repoFullName, setRepoFullName] = useState('');
+  const [branch, setBranch] = useState('main');
+  const [dockerfilePath, setDockerfilePath] = useState('Dockerfile');
+  const [buildContext, setBuildContext] = useState('.');
   const [hostname, setHostname] = useState('');
   const [publicPort, setPublicPort] = useState('');
   const [autoSubdomain, setAutoSubdomain] = useState(false);
@@ -99,17 +104,28 @@ export function CreateServiceForm() {
         name,
         slug,
         kind: 'app',
-        image,
+        image_source: imageSource,
         env: Object.fromEntries(env.filter((row) => row.key).map((row) => [row.key, row.value])),
       };
-      if (template) body.template = template;
+      if (imageSource === 'github') {
+        body.github = {
+          repo_full_name: repoFullName,
+          branch,
+          dockerfile_path: dockerfilePath,
+          build_context: buildContext,
+        };
+      } else {
+        body.image = image;
+        if (template) body.template = template;
+        // Managed siblings only apply to registry-image services in this slice.
+        const filteredRequires = requires.filter((r) => r.name.trim());
+        if (filteredRequires.length > 0) {
+          body.config = { requires: filteredRequires };
+        }
+      }
       if (hostname) body.hostname = hostname;
       if (publicPort) body.public_port = Number(publicPort);
       if (autoSubdomain) body.auto_subdomain = true;
-      const filteredRequires = requires.filter((r) => r.name.trim());
-      if (filteredRequires.length > 0) {
-        body.config = { requires: filteredRequires };
-      }
 
       const res = await fetch('/api/services', {
         method: 'POST',
@@ -181,21 +197,74 @@ export function CreateServiceForm() {
         </Field>
       </div>
 
-      <Field label="Template" hint="optional">
-        <Select value={template} onChange={(e) => setTemplate(e.target.value)}>
-          <option value="">— none —</option>
-          {templates.map((t) => (
-            <option key={t.id} value={t.id}>{t.label}</option>
-          ))}
-        </Select>
+      <Field label="Source">
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            variant={imageSource === 'image' ? 'primary' : 'secondary'}
+            onClick={() => setImageSource('image')}
+          >
+            Image registry
+          </Button>
+          <Button
+            type="button"
+            variant={imageSource === 'github' ? 'primary' : 'secondary'}
+            onClick={() => setImageSource('github')}
+          >
+            GitHub repo
+          </Button>
+        </div>
       </Field>
-      {selectedTemplate && (
-        <p className="text-xs text-(--color-muted) -mt-2">{selectedTemplate.description}</p>
-      )}
 
-      <Field label="Image" hint="image:tag or image@sha256:...">
-        <Input value={image} onChange={(e) => setImage(e.target.value)} placeholder="ghcr.io/org/app:latest" required />
-      </Field>
+      {imageSource === 'image' ? (
+        <>
+          <Field label="Template" hint="optional">
+            <Select value={template} onChange={(e) => setTemplate(e.target.value)}>
+              <option value="">— none —</option>
+              {templates.map((t) => (
+                <option key={t.id} value={t.id}>{t.label}</option>
+              ))}
+            </Select>
+          </Field>
+          {selectedTemplate && (
+            <p className="text-xs text-(--color-muted) -mt-2">{selectedTemplate.description}</p>
+          )}
+
+          <Field label="Image" hint="image:tag or image@sha256:...">
+            <Input value={image} onChange={(e) => setImage(e.target.value)} placeholder="ghcr.io/org/app:latest" required />
+          </Field>
+        </>
+      ) : (
+        <>
+          <p className="text-xs text-(--color-muted)">
+            hotbox shallow-clones the public repo and builds the image on the host. Pushes
+            don&apos;t auto-deploy yet — use the Rebuild button on the service page. Private
+            repos aren&apos;t supported in this version.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Repository" hint="owner/repo (public)">
+              <Input
+                value={repoFullName}
+                onChange={(e) => setRepoFullName(e.target.value)}
+                placeholder="vercel/next.js"
+                pattern="^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$"
+                required
+              />
+            </Field>
+            <Field label="Branch">
+              <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" required />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Dockerfile path" hint="relative to build context">
+              <Input value={dockerfilePath} onChange={(e) => setDockerfilePath(e.target.value)} placeholder="Dockerfile" required />
+            </Field>
+            <Field label="Build context" hint="relative to repo root">
+              <Input value={buildContext} onChange={(e) => setBuildContext(e.target.value)} placeholder="." required />
+            </Field>
+          </div>
+        </>
+      )}
 
       <div className="grid grid-cols-3 gap-3">
         <div className="col-span-2">
@@ -279,60 +348,63 @@ export function CreateServiceForm() {
         )}
       </div>
 
-      <div>
-        <div className="text-xs text-(--color-muted) mb-2 flex items-start justify-between gap-4">
-          <div>
-            <div>Requires</div>
-            <p className="text-(--color-muted)/70 mt-0.5">
-              Spin up a managed Postgres or Redis sibling. Connection string is injected as{' '}
-              <code className="mono">&lt;NAME&gt;_URL</code> on this service.
-            </p>
+      {imageSource === 'image' && (
+        <div>
+          <div className="text-xs text-(--color-muted) mb-2 flex items-start justify-between gap-4">
+            <div>
+              <div>Requires</div>
+              <p className="text-(--color-muted)/70 mt-0.5">
+                Spin up a managed Postgres or Redis sibling. Connection string is injected as{' '}
+                <code className="mono">&lt;NAME&gt;_URL</code> on this service. (Not available for
+                GitHub services yet — run the dependency separately and wire it with a variable.)
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRequires([...requires, { kind: 'postgres', name: '' }])}
+              className="text-(--color-accent) hover:underline text-xs shrink-0"
+            >+ add</button>
           </div>
-          <button
-            type="button"
-            onClick={() => setRequires([...requires, { kind: 'postgres', name: '' }])}
-            className="text-(--color-accent) hover:underline text-xs shrink-0"
-          >+ add</button>
+          {requires.length === 0 ? (
+            <div className="text-xs text-(--color-muted)/70 italic">No managed siblings</div>
+          ) : (
+            <div className="space-y-2">
+              {requires.map((row, i) => (
+                <div key={i} className="grid grid-cols-[140px_1fr_auto] gap-2">
+                  <Select
+                    value={row.kind}
+                    onChange={(e) =>
+                      setRequires(
+                        requires.map((r, j) =>
+                          i === j ? { ...r, kind: e.target.value as RequireRow['kind'] } : r,
+                        ),
+                      )
+                    }
+                  >
+                    <option value="postgres">postgres</option>
+                    <option value="redis">redis</option>
+                  </Select>
+                  <Input
+                    value={row.name}
+                    onChange={(e) =>
+                      setRequires(
+                        requires.map((r, j) => (i === j ? { ...r, name: e.target.value } : r)),
+                      )
+                    }
+                    placeholder="db"
+                    pattern="^[a-z0-9][a-z0-9-]*[a-z0-9]?$"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => setRequires(requires.filter((_, j) => j !== i))}
+                  >×</Button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-        {requires.length === 0 ? (
-          <div className="text-xs text-(--color-muted)/70 italic">No managed siblings</div>
-        ) : (
-          <div className="space-y-2">
-            {requires.map((row, i) => (
-              <div key={i} className="grid grid-cols-[140px_1fr_auto] gap-2">
-                <Select
-                  value={row.kind}
-                  onChange={(e) =>
-                    setRequires(
-                      requires.map((r, j) =>
-                        i === j ? { ...r, kind: e.target.value as RequireRow['kind'] } : r,
-                      ),
-                    )
-                  }
-                >
-                  <option value="postgres">postgres</option>
-                  <option value="redis">redis</option>
-                </Select>
-                <Input
-                  value={row.name}
-                  onChange={(e) =>
-                    setRequires(
-                      requires.map((r, j) => (i === j ? { ...r, name: e.target.value } : r)),
-                    )
-                  }
-                  placeholder="db"
-                  pattern="^[a-z0-9][a-z0-9-]*[a-z0-9]?$"
-                />
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => setRequires(requires.filter((_, j) => j !== i))}
-                >×</Button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      )}
 
       {error && <Callout tone="error">{error}</Callout>}
 

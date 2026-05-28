@@ -70,6 +70,61 @@ describe('CreateServiceInputSchema', () => {
     expect(out.environment_id).toBe(baseValid.environment_id);
     expect(out.kind).toBe('app');
     expect(out.env).toEqual({});
+    expect(out.image_source).toBe('image');
+  });
+
+  it('rejects an image source without an image', () => {
+    const { image: _image, ...noImage } = baseValid;
+    expect(() => CreateServiceInputSchema.parse(noImage)).toThrow();
+  });
+});
+
+describe('CreateServiceInputSchema — github source', () => {
+  const ghBase = {
+    project_id: '11111111-1111-1111-1111-111111111111',
+    environment_id: '22222222-2222-2222-2222-222222222222',
+    name: 'My API',
+    slug: 'my-api',
+    image_source: 'github' as const,
+    github: { repo_full_name: 'vercel/next.js', branch: 'main' },
+  };
+
+  it('accepts a github source without an image and defaults dockerfile/context', () => {
+    const out = CreateServiceInputSchema.parse(ghBase);
+    expect(out.image_source).toBe('github');
+    expect(out.github?.dockerfile_path).toBe('Dockerfile');
+    expect(out.github?.build_context).toBe('.');
+  });
+
+  it('requires the github object when image_source is github', () => {
+    const { github: _g, ...noGithub } = ghBase;
+    expect(() => CreateServiceInputSchema.parse(noGithub)).toThrow();
+  });
+
+  it('rejects a malformed repo_full_name', () => {
+    expect(() =>
+      CreateServiceInputSchema.parse({ ...ghBase, github: { repo_full_name: 'not-a-repo', branch: 'main' } }),
+    ).toThrow();
+  });
+
+  it('rejects a branch that could be read as a flag', () => {
+    expect(() =>
+      CreateServiceInputSchema.parse({ ...ghBase, github: { repo_full_name: 'a/b', branch: '--upload-pack=x' } }),
+    ).toThrow();
+  });
+
+  it('rejects managed siblings (requires) on a github service', () => {
+    expect(() =>
+      CreateServiceInputSchema.parse({
+        ...ghBase,
+        config: { requires: [{ kind: 'postgres', name: 'db' }] },
+      }),
+    ).toThrow();
+  });
+
+  it('allows a github service with no requires', () => {
+    const out = CreateServiceInputSchema.parse({ ...ghBase, config: {} });
+    expect(out.image_source).toBe('github');
   });
 });
 

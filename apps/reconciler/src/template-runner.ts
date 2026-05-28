@@ -8,7 +8,7 @@ import {
   LABEL_MANAGED,
 } from '@hotbox/shared';
 import { open, type KeyRing } from '@hotbox/crypto';
-import { buildContainerCreateOptions, pullAndResolveDigest, type BuildContainerSpecInput } from '@hotbox/docker';
+import { buildContainerCreateOptions, pullAndResolveDigest, isLocalImage, type BuildContainerSpecInput } from '@hotbox/docker';
 
 export interface RolePlan {
   role: string;
@@ -273,7 +273,12 @@ export async function ensureRoleDigest(
   deployment: Deployment,
   role: string,
   image: string,
-): Promise<string> {
+): Promise<string | null> {
+  // Locally-built images (github source) have no registry to pull from and
+  // are already pinned by their unique :<sha> tag. Skip digest resolution and
+  // let the container be created against the tag directly.
+  if (isLocalImage(image)) return null;
+
   const digests = (deployment.container_digests ?? {}) as Record<string, string>;
   if (digests[role]) {
     // best-effort refresh in the background; don't block on it

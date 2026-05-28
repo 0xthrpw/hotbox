@@ -5,6 +5,14 @@ type Jsonb<T = unknown> = ColumnType<T, T | string, T | string>;
 type JsonbDef<T = unknown> = ColumnType<T, T | string | undefined, T | string>;
 
 export type ServiceKind = 'app' | 'managed_pg' | 'managed_redis';
+export type ImageSource = 'image' | 'github';
+export type BuildStatus =
+  | 'queued'
+  | 'cloning'
+  | 'building'
+  | 'deploying'
+  | 'success'
+  | 'failed';
 export type DesiredState = 'running' | 'stopped' | 'archived';
 export type CurrentState =
   | 'pending'
@@ -98,6 +106,7 @@ export interface ServicesTable {
   hostname: string | null;
   public_port: number | null;
   auto_subdomain: Generated<boolean>;
+  image_source: Generated<ImageSource>;
   config: JsonbDef<ServiceConfig>;
   template: string | null;
   owner_id: string | null;
@@ -219,6 +228,37 @@ export interface SecretsTable {
   updated_at: Generated<Timestamp>;
 }
 
+export interface GithubSourcesTable {
+  id: Generated<string>;
+  service_id: string;
+  repo_full_name: string;
+  branch: string;
+  dockerfile_path: Generated<string>;
+  build_context: Generated<string>;
+  last_built_sha: string | null;
+  webhook_secret: string | null;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface BuildsTable {
+  id: Generated<string>;
+  github_source_id: string;
+  service_id: string;
+  commit_sha: string | null;
+  commit_message: string | null;
+  commit_author: string | null;
+  triggered_by: string;
+  status: Generated<BuildStatus>;
+  image_tag: string | null;
+  image_digest: string | null;
+  log: string | null;
+  error_message: string | null;
+  started_at: Timestamp | null;
+  finished_at: Timestamp | null;
+  created_at: Generated<Timestamp>;
+}
+
 export interface TokensTable {
   id: Generated<string>;
   kind: TokenKind;
@@ -294,6 +334,8 @@ export interface Database {
   networks: NetworksTable;
   variables: VariablesTable;
   secrets: SecretsTable;
+  github_sources: GithubSourcesTable;
+  builds: BuildsTable;
   tokens: TokensTable;
   audit_log: AuditLogTable;
   node_metrics: NodeMetricsTable;
@@ -330,3 +372,8 @@ export type Secret = Selectable<SecretsTable>;
 export type Variable = Selectable<VariablesTable>;
 export type NewVariable = Insertable<VariablesTable>;
 export type VariableUpdate = Updateable<VariablesTable>;
+export type GithubSource = Selectable<GithubSourcesTable>;
+export type NewGithubSource = Insertable<GithubSourcesTable>;
+export type Build = Selectable<BuildsTable>;
+export type NewBuild = Insertable<BuildsTable>;
+export type BuildUpdate = Updateable<BuildsTable>;

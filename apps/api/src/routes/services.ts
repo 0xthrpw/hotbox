@@ -61,9 +61,10 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         'services.id', 'services.slug', 'services.name', 'services.host_id',
         'services.project_id', 'services.environment_id', 'services.kind',
         'services.desired_state', 'services.current_state', 'services.hostname',
-        'services.public_port', 'services.auto_subdomain', 'services.config',
-        'services.template', 'services.owner_id', 'services.parent_service_id',
-        'services.created_at', 'services.updated_at', 'services.archived_at',
+        'services.public_port', 'services.auto_subdomain', 'services.image_source',
+        'services.config', 'services.template', 'services.owner_id',
+        'services.parent_service_id', 'services.created_at', 'services.updated_at',
+        'services.archived_at',
         'projects.slug as project_slug', 'projects.name as project_name',
         'environments.slug as environment_slug', 'environments.name as environment_name',
       ])
@@ -90,7 +91,14 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       .where('parent_service_id', '=', id)
       .where('archived_at', 'is', null)
       .execute();
-    return { service: svc, deployments, containers, siblings };
+    const githubSource = svc.image_source === 'github'
+      ? await fastify.ctx.db
+          .selectFrom('github_sources')
+          .select(['id', 'repo_full_name', 'branch', 'dockerfile_path', 'build_context', 'last_built_sha'])
+          .where('service_id', '=', id)
+          .executeTakeFirst()
+      : null;
+    return { service: svc, deployments, containers, siblings, github_source: githubSource ?? null };
   });
 
   fastify.post('/services', async (req, reply) => {
@@ -220,16 +228,62 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       }).execute();
     }
 
+    // github source: no deployment yet — the build worker creates the first
+    // deployment once it has clone+built the image. Stash the source config
+    // and enqueue a build. The service sits in 'pending' until then.
+    if (input.image_source === 'github') {
+      const ghInput = input.github!; // guaranteed by the schema refine
+      const ghSource = await fastify.ctx.db
+        .insertInto('github_sources')
+        .values({
+          service_id: svc.id,
+          repo_full_name: ghInput.repo_full_name,
+          branch: ghInput.branch,
+          dockerfile_path: ghInput.dockerfile_path,
+          build_context: ghInput.build_context,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const build = await fastify.ctx.db
+        .insertInto('builds')
+        .values({
+          github_source_id: ghSource.id,
+          service_id: svc.id,
+          triggered_by: 'first-deploy',
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+
+      await recordAudit(fastify.ctx.db, req, {
+        action: 'service.create',
+        target_kind: 'service',
+        target_id: svc.id,
+        payload: {
+          slug: svc.slug,
+          project_id: svc.project_id,
+          environment_id: svc.environment_id,
+          image_source: 'github',
+          repo: ghInput.repo_full_name,
+          branch: ghInput.branch,
+        },
+      });
+
+      fastify.ctx.buildWorker.kick();
+      return { service: svc, build, siblings: [] };
+    }
+
+    // image source: create deployment v1 directly from the registry image.
     // Resolve the full merged map for env_snapshot. Sibling-supplied plain
     // env (Redis URLs etc.) wins over user variables for the same key, since
     // overriding sibling wiring would silently break the service.
+    const image = input.image!; // guaranteed by the schema refine
     const resolved = await resolveVariables(fastify.ctx.db, fastify.ctx.keyring, svc.id);
     const deployment = await fastify.ctx.db
       .insertInto('deployments')
       .values({
         service_id: svc.id,
         version: 1,
-        image: input.image,
+        image,
         env_snapshot: { ...resolved, ...sibling.parentExtraEnv },
         secret_refs: sibling.parentSecretRefs,
         network_refs: sibling.parentNetworkRefs,
@@ -247,7 +301,7 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         project_id: svc.project_id,
         environment_id: svc.environment_id,
         template: svc.template,
-        image: input.image,
+        image,
         siblings: sibling.siblingIds,
       },
     });
@@ -315,6 +369,69 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
 
     fastify.ctx.reconciler.reconcileSoon(id);
     return { deployment };
+  });
+
+  fastify.get('/services/:id/builds', async (req, reply) => {
+    requireAuth(req);
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    // Omit the (potentially large) log column from the list view.
+    const builds = await fastify.ctx.db
+      .selectFrom('builds')
+      .select([
+        'id', 'service_id', 'commit_sha', 'commit_message', 'commit_author',
+        'triggered_by', 'status', 'image_tag', 'image_digest', 'error_message',
+        'started_at', 'finished_at', 'created_at',
+      ])
+      .where('service_id', '=', id)
+      .orderBy('created_at', 'desc')
+      .limit(50)
+      .execute();
+    return { builds };
+  });
+
+  fastify.get('/services/:id/builds/:buildId', async (req, reply) => {
+    requireAuth(req);
+    const { id, buildId } = z
+      .object({ id: z.string().uuid(), buildId: z.string().uuid() })
+      .parse(req.params);
+    const build = await fastify.ctx.db
+      .selectFrom('builds')
+      .selectAll()
+      .where('id', '=', buildId)
+      .where('service_id', '=', id)
+      .executeTakeFirst();
+    if (!build) return reply.code(404).send({ error: 'not found' });
+    return { build };
+  });
+
+  fastify.post('/services/:id/builds', async (req, reply) => {
+    requireAuth(req);
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const source = await fastify.ctx.db
+      .selectFrom('github_sources')
+      .selectAll()
+      .where('service_id', '=', id)
+      .executeTakeFirst();
+    if (!source) {
+      return reply.code(400).send({ error: 'service is not backed by a github source' });
+    }
+    const build = await fastify.ctx.db
+      .insertInto('builds')
+      .values({
+        github_source_id: source.id,
+        service_id: id,
+        triggered_by: 'manual',
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    await recordAudit(fastify.ctx.db, req, {
+      action: 'build.create',
+      target_kind: 'service',
+      target_id: id,
+      payload: { build_id: build.id, triggered_by: 'manual', branch: source.branch },
+    });
+    fastify.ctx.buildWorker.kick();
+    return { build };
   });
 
   fastify.patch('/services/:id/ingress', async (req, reply) => {
