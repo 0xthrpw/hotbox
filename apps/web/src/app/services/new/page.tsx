@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { TopNav } from '@/components/nav';
 import { CreateServiceForm } from './create-service-form';
 
@@ -10,7 +11,12 @@ export default function NewServicePage() {
         <p className="text-sm text-(--color-muted) mb-6">
           Pick a template if you have one, otherwise just give us an image reference + a domain.
         </p>
-        <CreateServiceForm />
+        {/* useSearchParams() in the form requires request context — wrapping in
+            Suspense opts the subtree out of static prerender so Next 15 doesn't
+            try to evaluate searchParams at build time. */}
+        <Suspense fallback={null}>
+          <CreateServiceForm />
+        </Suspense>
       </main>
     </>
   );
