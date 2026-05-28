@@ -7,6 +7,7 @@ import { LogViewer } from '@/components/log-viewer';
 import { ServiceActions } from '@/components/service-actions';
 import { VariablesPanel } from '@/components/variables-panel';
 import { EffectiveVariables } from '@/components/effective-variables';
+import { IngressEditor } from '@/components/ingress-editor';
 import { resolvePanels } from '@/panels/registry';
 
 interface ServicePayload {
@@ -33,7 +34,7 @@ export default async function ServiceDetailPage({ params }: { params: Promise<{ 
             </h1>
             <p className="text-(--color-muted) text-sm">{data.service.name}</p>
             <p className="text-xs text-(--color-muted) mono mt-1">
-              {data.service.hostname ? `${data.service.hostname}:${data.service.public_port ?? '—'}` : 'no ingress'}
+              {data.service.project_slug} / {data.service.environment_slug}
             </p>
           </div>
           <ServiceActions
@@ -41,6 +42,18 @@ export default async function ServiceDetailPage({ params }: { params: Promise<{ 
             desiredState={data.service.desired_state}
           />
         </header>
+
+        <IngressEditor
+          serviceId={data.service.id}
+          serviceSlug={data.service.slug}
+          projectSlug={data.service.project_slug}
+          envSlug={data.service.environment_slug}
+          initial={{
+            hostname: data.service.hostname,
+            public_port: data.service.public_port,
+            auto_subdomain: data.service.auto_subdomain,
+          }}
+        />
 
         {panels.length > 0 && (
           <section className="space-y-4">

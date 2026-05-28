@@ -38,6 +38,7 @@ export interface ServiceListItem {
   current_state: CurrentState;
   hostname: string | null;
   public_port: number | null;
+  auto_subdomain: boolean;
   template: string | null;
   project_id: string;
   environment_id: string;

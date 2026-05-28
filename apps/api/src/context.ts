@@ -9,6 +9,14 @@ export interface AppContext {
   reconciler: Reconciler;
   keyring: KeyRing;
   hostId: string;
+  /**
+   * Base domain for auto-generated service subdomains
+   * (e.g. "on.hotbox.wtf"). When null, auto_subdomain=true on a service is
+   * silently ignored — the operator hasn't configured the wildcard DNS +
+   * Cloudflare API token yet, so we don't emit Traefik labels that would
+   * never resolve.
+   */
+  autoSubdomainBase: string | null;
 }
 
 declare module 'fastify' {

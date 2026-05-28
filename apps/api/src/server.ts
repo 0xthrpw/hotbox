@@ -7,6 +7,7 @@ import { attachSession, authRoutes } from './routes/auth.js';
 import { servicesRoutes } from './routes/services.js';
 import { projectsRoutes } from './routes/projects.js';
 import { variablesRoutes } from './routes/variables.js';
+import { metaRoutes } from './routes/meta.js';
 import { tokensRoutes } from './routes/tokens.js';
 import { logsRoutes } from './routes/logs.js';
 import { driftRoutes } from './routes/drift.js';
@@ -37,6 +38,7 @@ export async function buildServer(ctx: AppContext): Promise<FastifyInstance> {
   await app.register(async (instance) => {
     await attachSession(instance);
     await authRoutes(instance);
+    await metaRoutes(instance);
     await projectsRoutes(instance);
     await variablesRoutes(instance);
     await servicesRoutes(instance);

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { randomBytes } from 'node:crypto';
-import { CreateServiceInputSchema, CreateDeploymentInputSchema } from '@hotbox/shared';
+import { CreateServiceInputSchema, CreateDeploymentInputSchema, UpdateIngressInputSchema } from '@hotbox/shared';
 import { seal, type KeyRing } from '@hotbox/crypto';
 import type { CreateServiceInput } from '@hotbox/shared';
 import type { HotboxDb, NetworkRef, SecretRef } from '@hotbox/db';
@@ -33,8 +33,8 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         'services.id', 'services.slug', 'services.name', 'services.host_id',
         'services.project_id', 'services.environment_id', 'services.kind',
         'services.desired_state', 'services.current_state', 'services.hostname',
-        'services.public_port', 'services.config', 'services.template',
-        'services.owner_id', 'services.parent_service_id',
+        'services.public_port', 'services.auto_subdomain', 'services.config',
+        'services.template', 'services.owner_id', 'services.parent_service_id',
         'services.created_at', 'services.updated_at', 'services.archived_at',
         'projects.slug as project_slug', 'projects.name as project_name',
         'environments.slug as environment_slug', 'environments.name as environment_name',
@@ -61,8 +61,8 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         'services.id', 'services.slug', 'services.name', 'services.host_id',
         'services.project_id', 'services.environment_id', 'services.kind',
         'services.desired_state', 'services.current_state', 'services.hostname',
-        'services.public_port', 'services.config', 'services.template',
-        'services.owner_id', 'services.parent_service_id',
+        'services.public_port', 'services.auto_subdomain', 'services.config',
+        'services.template', 'services.owner_id', 'services.parent_service_id',
         'services.created_at', 'services.updated_at', 'services.archived_at',
         'projects.slug as project_slug', 'projects.name as project_name',
         'environments.slug as environment_slug', 'environments.name as environment_name',
@@ -153,6 +153,7 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         kind: input.kind,
         hostname: input.hostname ?? null,
         public_port: input.public_port ?? null,
+        auto_subdomain: input.auto_subdomain,
         config: input.config,
         template: input.template ?? null,
         owner_id: req.user.id,
@@ -314,6 +315,49 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
 
     fastify.ctx.reconciler.reconcileSoon(id);
     return { deployment };
+  });
+
+  fastify.patch('/services/:id/ingress', async (req, reply) => {
+    requireAuth(req);
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const input = UpdateIngressInputSchema.parse(req.body);
+    const svc = await fastify.ctx.db
+      .selectFrom('services')
+      .select(['id', 'slug', 'hostname', 'public_port', 'auto_subdomain'])
+      .where('id', '=', id)
+      .executeTakeFirst();
+    if (!svc) return reply.code(404).send({ error: 'not found' });
+
+    // Build the patch — undefined means "don't touch this column"; explicit
+    // null means "clear it". The Zod schema already enforces that at least
+    // one field is present, so the update is guaranteed non-empty.
+    const patch: Record<string, unknown> = {};
+    if (input.hostname !== undefined) patch.hostname = input.hostname;
+    if (input.public_port !== undefined) patch.public_port = input.public_port;
+    if (input.auto_subdomain !== undefined) patch.auto_subdomain = input.auto_subdomain;
+
+    const updated = await fastify.ctx.db
+      .updateTable('services')
+      .set(patch)
+      .where('id', '=', id)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    await recordAudit(fastify.ctx.db, req, {
+      action: 'service.ingress.update',
+      target_kind: 'service',
+      target_id: id,
+      payload: {
+        slug: svc.slug,
+        hostname: updated.hostname,
+        public_port: updated.public_port,
+        auto_subdomain: updated.auto_subdomain,
+      },
+    });
+
+    // Reconcile picks up the new Traefik labels on the next tick (or sooner).
+    fastify.ctx.reconciler.reconcileSoon(id);
+    return { service: updated };
   });
 
   fastify.post('/services/:id/archive', async (req, reply) => {

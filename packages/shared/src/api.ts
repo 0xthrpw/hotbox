@@ -82,9 +82,28 @@ export const CreateServiceInputSchema = z.object({
   secrets: z.record(z.string()).default({}),
   hostname: z.string().optional(),
   public_port: z.number().int().positive().optional(),
+  auto_subdomain: z.boolean().default(false),
   config: ServiceConfigSchema.partial().default({}),
 });
 export type CreateServiceInput = z.infer<typeof CreateServiceInputSchema>;
+
+/**
+ * Patch shape for the service-detail "edit ingress" action. All three fields
+ * are optional and independently nullable so an operator can clear a custom
+ * hostname or flip auto_subdomain without touching the others. At least one
+ * field must be present.
+ */
+export const UpdateIngressInputSchema = z
+  .object({
+    hostname: z.string().nullable().optional(),
+    public_port: z.number().int().positive().nullable().optional(),
+    auto_subdomain: z.boolean().optional(),
+  })
+  .refine(
+    (v) => v.hostname !== undefined || v.public_port !== undefined || v.auto_subdomain !== undefined,
+    { message: 'must update at least one field' },
+  );
+export type UpdateIngressInput = z.infer<typeof UpdateIngressInputSchema>;
 
 export const CreateDeploymentInputSchema = z.object({
   /** Optional — defaults to the previous deployment's image (= redeploy). */

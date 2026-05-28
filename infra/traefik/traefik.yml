@@ -35,10 +35,33 @@ providers:
     directory: /etc/traefik/dynamic
     watch: true
 
+# Two cert resolvers:
+#   le-http : HTTP-01 challenge on :80. Used by the control-plane hostnames
+#             (hotbox web + api) and by any service that sets a custom
+#             `hostname` field. Cheap, no DNS provider creds needed.
+#   le-dns  : DNS-01 challenge via Cloudflare for the wildcard
+#             *.${HOTBOX_AUTO_SUBDOMAIN_BASE}. Used by services that opt
+#             in to `auto_subdomain`. Issues exactly one cert for the
+#             wildcard — every auto subdomain reuses it, sidestepping LE
+#             rate limits and avoiding a fresh challenge per service.
+#
+# The ACME email is intentionally NOT set here as `email: ${ACME_EMAIL}` —
+# Traefik does not substitute env vars in its static YAML config. Set it
+# via the env-var equivalents in compose.hotbox.yml:
+#   TRAEFIK_CERTIFICATESRESOLVERS_LE_HTTP_ACME_EMAIL
+#   TRAEFIK_CERTIFICATESRESOLVERS_LE_DNS_ACME_EMAIL
 certificatesResolvers:
-  le:
+  le-http:
     acme:
-      email: ${ACME_EMAIL}
-      storage: /etc/traefik/acme/acme.json
+      storage: /etc/traefik/acme/acme-http.json
       httpChallenge:
         entryPoint: web
+  le-dns:
+    acme:
+      storage: /etc/traefik/acme/acme-dns.json
+      dnsChallenge:
+        provider: cloudflare
+        delayBeforeCheck: 10
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"

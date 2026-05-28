@@ -312,3 +312,39 @@ Second slice of the Railway-parity roadmap. Variables can now live at three scop
 
 Files: `packages/db/migrations/20260615000001_shared_variables.sql`, `packages/db/src/schema.ts` (added `VariablesTable`, `VariableScope`, removed `EnvVarsTable`), `packages/shared/src/api.ts` (`CreateVariableInputSchema`, `UpdateVariableInputSchema`, `VariableScopeSchema`), `apps/api/src/lib/resolve-variables.ts` (new), `apps/api/src/routes/variables.ts` (new), `apps/api/src/routes/services.ts` (create-path now writes variable rows + resolves env_snapshot; redeploy re-resolves when body.env absent), `apps/api/src/routes/projects.ts` (env duplicate copies variables with re-sealed secrets), `apps/api/src/server.ts` (registered `variablesRoutes`), `apps/web/src/components/variables-panel.tsx`, `apps/web/src/components/effective-variables.tsx`, `apps/web/src/app/projects/[id]/project-detail-client.tsx`, `apps/web/src/app/services/[id]/page.tsx`. Tests: `apps/api/tests/resolve-variables.test.ts`, `packages/shared/tests/api-schemas.test.ts` (extended).
 
+---
+
+## Phase 3 — Auto subdomains + Traefik DNS-01 wildcard
+
+Third slice of the Railway-parity roadmap. Services can now opt into a deterministic `<slug>-<env>-<project>.${base}` URL that's covered by a single wildcard Let's Encrypt cert — no per-service DNS edit, no per-service ACME issuance.
+
+### What shipped
+
+**Schema.** New migration `20260620000001_auto_subdomain.sql` adds a single `services.auto_subdomain boolean not null default false` column. No backfill needed — every service starts opted-out.
+
+**Traefik resolver split.** `infra/traefik/traefik.yml` now defines two resolvers: `le-http` (HTTP-01, used by control-plane hostnames + service custom hostnames) and `le-dns` (DNS-01 via Cloudflare, used for the `*.${HOTBOX_AUTO_SUBDOMAIN_BASE}` wildcard). The old single `le` resolver is gone; control-plane labels in `compose.hotbox.yml` were updated accordingly.
+
+While touching the resolver config, the long-standing ACME-email env-var-substitution bug (documented in HETZNER.md and the trial-bugs memory) was fixed properly: the `email: ${ACME_EMAIL}` literal is removed from `traefik.yml` and the email is set via `TRAEFIK_CERTIFICATESRESOLVERS_LE_HTTP_ACME_EMAIL` / `TRAEFIK_CERTIFICATESRESOLVERS_LE_DNS_ACME_EMAIL` env vars in `compose.hotbox.yml`. New deploys no longer need the manual pre-boot edit.
+
+**HOTBOX_AUTO_SUBDOMAIN_BASE plumbing.** Read at boot in `apps/api/src/main.ts` and threaded through `AppContext.autoSubdomainBase` + `Reconciler.autoSubdomainBase`. Unset = feature globally disabled (existing services with `auto_subdomain=true` still pass typecheck but no auto router is emitted — keeps trial boxes without DNS safe).
+
+**Reconciler emits up to two routers per service.** `apps/reconciler/src/traefik-labels.ts` rewrites the label generation: if the service has a custom hostname, a `<id>-custom` router (le-http resolver). If `auto_subdomain=true` and the base is set, a `<id>-auto` router (le-dns resolver). Both routers point at the same loadbalancer service so traffic on either hostname reaches the same container. `ingress_via` (file-provider service, used by eth-archive's rpc-proxy path) still works on both routers.
+
+**Internal authz accepts either hostname.** `apps/api/src/routes/internal-authz.ts` now joins through to project + environment slugs and validates `x-forwarded-host` against either the custom hostname or the computed auto subdomain. Service-scoped RPC tokens work over either URL.
+
+**API.** New `PATCH /api/services/:id/ingress` accepts `{hostname?, public_port?, auto_subdomain?}` — at least one field required. Triggers `reconcileSoon` so Traefik picks up the new labels on the next tick. Existing services can be exposed (or moved off the auto subdomain) without recreate. New `GET /api/meta` returns `{auto_subdomain_base}` so the web UI can render a live preview of the auto URL before submit.
+
+**Frontend.** Create-service form gains an "Auto subdomain on `<base>`" checkbox with a live preview of the URL the service would land at. The service detail page gets a new inline `IngressEditor` component — shows current state (custom + auto hostnames), edit-in-place, save triggers the PATCH. When `HOTBOX_AUTO_SUBDOMAIN_BASE` is unset, the checkbox is hidden with a docs pointer; the API endpoint still accepts `auto_subdomain=true` (forward-compatible — operator can enable the base later and the flag becomes active).
+
+### Operator setup
+
+New `docs/SUBDOMAINS.md` walks through the Cloudflare side (zone delegation, wildcard A record, API token scoping) and the env-var setup. First-cert verification + troubleshooting are documented. Switching DNS providers is a config change in two files (resolver name in `traefik.yml`, credential env var in `compose.hotbox.yml`) — no code changes.
+
+### Verification
+
+- 80 unit tests pass — 8 new in `traefik-labels.test.ts` covering: auto-only, custom-only, both, base-unset opt-out, neither, ingress_via still routes through file-provider, cross-env router-id collision check. Also covers the new `autoSubdomainFor` helper directly.
+- Typecheck clean across all 9 packages.
+- The trial box (HTTP-only, no DNS) is unaffected: it uses an override `traefik.yml` that doesn't define ACME at all, and `HOTBOX_AUTO_SUBDOMAIN_BASE` defaults to null so no auto routers are emitted. Phase 3 ships, the trial box keeps working, the auto subdomain feature lights up the first time someone sets the env var.
+
+Files: `packages/db/migrations/20260620000001_auto_subdomain.sql`, `packages/db/src/schema.ts` (added `auto_subdomain` to ServicesTable), `packages/shared/src/api.ts` (`auto_subdomain` on `CreateServiceInputSchema`, new `UpdateIngressInputSchema`), `infra/traefik/traefik.yml` (le-http + le-dns resolvers, removed YAML email literal), `infra/compose.hotbox.yml` (ACME email env vars per resolver, CLOUDFLARE_DNS_API_TOKEN, HOTBOX_AUTO_SUBDOMAIN_BASE on hotbox-api, le-http on control-plane router labels), `apps/api/src/context.ts` (autoSubdomainBase), `apps/api/src/main.ts` (reads HOTBOX_AUTO_SUBDOMAIN_BASE), `apps/reconciler/src/loop.ts` (passes autoSubdomainBase down), `apps/reconciler/src/traefik-labels.ts` (rewrite: two routers per service), `apps/api/src/routes/internal-authz.ts` (accepts auto subdomain), `apps/api/src/routes/services.ts` (PATCH /ingress, auto_subdomain in select + create), `apps/api/src/routes/meta.ts` (new), `apps/api/src/server.ts` (registered metaRoutes), `apps/web/src/lib/types.ts` (auto_subdomain on ServiceListItem), `apps/web/src/components/ingress-editor.tsx` (new), `apps/web/src/app/services/new/create-service-form.tsx` (auto subdomain checkbox + preview), `apps/web/src/app/services/[id]/page.tsx` (mounts IngressEditor). Docs: new `docs/SUBDOMAINS.md`. Tests: `apps/reconciler/tests/traefik-labels.test.ts` extended.
+

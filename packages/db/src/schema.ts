@@ -97,6 +97,7 @@ export interface ServicesTable {
   current_state: Generated<CurrentState>;
   hostname: string | null;
   public_port: number | null;
+  auto_subdomain: Generated<boolean>;
   config: JsonbDef<ServiceConfig>;
   template: string | null;
   owner_id: string | null;

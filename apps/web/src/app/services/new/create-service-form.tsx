@@ -38,14 +38,26 @@ export function CreateServiceForm() {
   const [image, setImage] = useState('');
   const [hostname, setHostname] = useState('');
   const [publicPort, setPublicPort] = useState('');
+  const [autoSubdomain, setAutoSubdomain] = useState(false);
   const [env, setEnv] = useState<EnvRow[]>([]);
   const [requires, setRequires] = useState<RequireRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const { data: metaData } = useSWR<{ auto_subdomain_base: string | null }>('/api/meta', fetcher);
+  const autoSubdomainBase = metaData?.auto_subdomain_base ?? null;
+
   const selectedTemplate = templates.find((t) => t.id === template);
   const selectedProject = projects.find((p) => p.id === projectId);
   const availableEnvs = selectedProject?.environments ?? [];
+  const selectedEnv = availableEnvs.find((e) => e.id === environmentId);
+
+  // Live preview of the auto subdomain so operators don't have to guess what
+  // they'd get. Only meaningful once project + env + slug are all picked.
+  const autoSubdomainPreview =
+    autoSubdomain && autoSubdomainBase && selectedProject && selectedEnv && slug
+      ? `${slug}-${selectedEnv.slug}-${selectedProject.slug}.${autoSubdomainBase}`
+      : null;
 
   // Auto-pick a sensible default project + env once data lands and nothing
   // came from the URL — keeps the form usable in a single-project setup.
@@ -93,6 +105,7 @@ export function CreateServiceForm() {
       if (template) body.template = template;
       if (hostname) body.hostname = hostname;
       if (publicPort) body.public_port = Number(publicPort);
+      if (autoSubdomain) body.auto_subdomain = true;
       const filteredRequires = requires.filter((r) => r.name.trim());
       if (filteredRequires.length > 0) {
         body.config = { requires: filteredRequires };
@@ -186,7 +199,7 @@ export function CreateServiceForm() {
 
       <div className="grid grid-cols-3 gap-3">
         <div className="col-span-2">
-          <Field label="Hostname" hint={selectedTemplate?.requires_hostname ? 'required for this template' : 'optional'}>
+          <Field label="Custom hostname" hint={selectedTemplate?.requires_hostname ? 'required for this template' : 'optional'}>
             <Input
               value={hostname}
               onChange={(e) => setHostname(e.target.value)}
@@ -199,6 +212,36 @@ export function CreateServiceForm() {
           <Input type="number" value={publicPort} onChange={(e) => setPublicPort(e.target.value)} placeholder="8080" />
         </Field>
       </div>
+
+      {autoSubdomainBase ? (
+        <div>
+          <label className="flex items-start gap-2 text-xs text-(--color-muted)">
+            <input
+              type="checkbox"
+              checked={autoSubdomain}
+              onChange={(e) => setAutoSubdomain(e.target.checked)}
+              className="mt-0.5"
+            />
+            <div>
+              <div>Auto subdomain on <span className="mono">{autoSubdomainBase}</span></div>
+              <p className="text-(--color-muted)/70 mt-0.5">
+                Wildcard cert covers the whole base — no DNS or cert action needed per service.
+                Can coexist with a custom hostname; both will route to this container.
+              </p>
+              {autoSubdomainPreview && (
+                <div className="mt-1.5 mono text-(--color-accent)">
+                  https://{autoSubdomainPreview}
+                </div>
+              )}
+            </div>
+          </label>
+        </div>
+      ) : (
+        <p className="text-xs text-(--color-muted)/70 italic">
+          Auto subdomain disabled — operator hasn&apos;t set HOTBOX_AUTO_SUBDOMAIN_BASE. See
+          docs/SUBDOMAINS.md to enable.
+        </p>
+      )}
 
       <div>
         <div className="text-xs text-(--color-muted) mb-2 flex items-center justify-between">
