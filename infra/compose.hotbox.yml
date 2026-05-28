@@ -17,6 +17,16 @@ services:
       - "80:80"
       - "443:443"
     environment:
+      # Traefik substitutes its own TRAEFIK_* env vars at startup, which is
+      # how we set the ACME email per resolver (the YAML file's ${ACME_EMAIL}
+      # would be taken literally and rejected by Let's Encrypt).
+      TRAEFIK_CERTIFICATESRESOLVERS_LE_HTTP_ACME_EMAIL: "${ACME_EMAIL}"
+      TRAEFIK_CERTIFICATESRESOLVERS_LE_DNS_ACME_EMAIL: "${ACME_EMAIL}"
+      # Cloudflare API token with Zone:DNS:Edit on the auto-subdomain zone.
+      # Traefik's lego ACME client reads this for the DNS-01 challenge.
+      # Leave unset if you're not using auto subdomains yet — le-http still
+      # works for the control-plane hostnames without it.
+      CLOUDFLARE_DNS_API_TOKEN: "${CLOUDFLARE_DNS_API_TOKEN:-}"
       ACME_EMAIL: "${ACME_EMAIL}"
       HOTBOX_WEB_HOST: "${HOTBOX_WEB_HOST}"
       HOTBOX_API_HOST: "${HOTBOX_API_HOST}"
@@ -57,6 +67,10 @@ services:
       HOST_ID: "${HOTBOX_HOST_ID}"
       HOTBOX_MASTER_KEY_PATH: /etc/hotbox/master.key
       WEB_ORIGIN: "https://${HOTBOX_WEB_HOST}"
+      # Base for auto subdomains (e.g. on.hotbox.wtf). When unset, the
+      # auto_subdomain checkbox on a service is silently ignored. See
+      # docs/SUBDOMAINS.md for the one-time Cloudflare setup.
+      HOTBOX_AUTO_SUBDOMAIN_BASE: "${HOTBOX_AUTO_SUBDOMAIN_BASE:-}"
       PORT: "3000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -66,7 +80,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.hotbox-api.rule: "Host(`${HOTBOX_API_HOST}`)"
       traefik.http.routers.hotbox-api.entrypoints: "websecure"
-      traefik.http.routers.hotbox-api.tls.certresolver: "le"
+      traefik.http.routers.hotbox-api.tls.certresolver: "le-http"
       traefik.http.services.hotbox-api.loadbalancer.server.port: "3000"
 
   hotbox-web:
@@ -82,7 +96,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.hotbox-web.rule: "Host(`${HOTBOX_WEB_HOST}`)"
       traefik.http.routers.hotbox-web.entrypoints: "websecure"
-      traefik.http.routers.hotbox-web.tls.certresolver: "le"
+      traefik.http.routers.hotbox-web.tls.certresolver: "le-http"
       traefik.http.services.hotbox-web.loadbalancer.server.port: "3000"
 
   hotbox-metrics-scraper:

@@ -17,11 +17,16 @@ async function main(): Promise<void> {
   const docker = createDockerClient({ socketPath: process.env.DOCKER_SOCKET ?? '/var/run/docker.sock' });
   const keyring = await loadMasterKey(masterKeyPath);
 
+  // null when unset — the reconciler treats auto_subdomain=true as a no-op
+  // in that case, so partial deployments (no DNS yet) stay safe.
+  const autoSubdomainBase = process.env.HOTBOX_AUTO_SUBDOMAIN_BASE?.trim() || null;
+
   const reconciler = new Reconciler({
     db,
     docker,
     hostId,
     keyring,
+    autoSubdomainBase,
     logger: { info: console.log, error: console.error },
   });
   reconciler.start();
@@ -32,7 +37,7 @@ async function main(): Promise<void> {
   const retention = new RetentionJob(db, { info: console.log, error: console.error });
   retention.start();
 
-  const app = await buildServer({ db, docker, reconciler, keyring, hostId });
+  const app = await buildServer({ db, docker, reconciler, keyring, hostId, autoSubdomainBase });
 
   await app.listen({ host: '0.0.0.0', port });
   app.log.info(`hotbox-api listening on :${port}`);

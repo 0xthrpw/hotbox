@@ -26,6 +26,11 @@ export interface ReconcilerOptions {
   docker: Dockerode;
   hostId: string;
   keyring: KeyRing;
+  /**
+   * Base domain for auto subdomains; null disables the feature. See
+   * AppContext.autoSubdomainBase for the why.
+   */
+  autoSubdomainBase: string | null;
   logger?: { info: (msg: string, meta?: unknown) => void; error: (msg: string, meta?: unknown) => void };
 }
 
@@ -34,6 +39,7 @@ export class Reconciler {
   private readonly docker: Dockerode;
   private readonly hostId: string;
   private readonly keyring: KeyRing;
+  private readonly autoSubdomainBase: string | null;
   private readonly log: NonNullable<ReconcilerOptions['logger']>;
   private timer: NodeJS.Timeout | null = null;
   private eventsAbort: AbortController | null = null;
@@ -45,6 +51,7 @@ export class Reconciler {
     this.docker = opts.docker;
     this.hostId = opts.hostId;
     this.keyring = opts.keyring;
+    this.autoSubdomainBase = opts.autoSubdomainBase;
     this.log = opts.logger ?? { info: () => {}, error: () => {} };
   }
 
@@ -284,7 +291,11 @@ export class Reconciler {
         version: deployment.version,
         role: item.role,
       }),
-      ...traefikLabelsFor({ service, container: item.container }),
+      ...traefikLabelsFor({
+        service,
+        container: item.container,
+        autoSubdomainBase: this.autoSubdomainBase,
+      }),
     };
 
     const injectedEnv = await decryptSecretEnv(this.db, this.keyring, deployment.secret_refs);
