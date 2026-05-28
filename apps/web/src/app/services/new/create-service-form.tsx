@@ -239,7 +239,7 @@ export function CreateServiceForm() {
       ) : (
         <p className="text-xs text-(--color-muted)/70 italic">
           Auto subdomain disabled — operator hasn&apos;t set HOTBOX_AUTO_SUBDOMAIN_BASE. See
-          docs/SUBDOMAINS.md to enable.
+          docs/AUTO_SUBDOMAINS.md to enable.
         </p>
       )}
 
