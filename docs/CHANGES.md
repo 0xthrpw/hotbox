@@ -280,3 +280,35 @@ The five-feature Railway-parity roadmap lives at `~/.claude/plans/hotbox-is-comi
 
 Files: `packages/db/migrations/20260601000001_projects_environments.sql`, `packages/db/src/schema.ts` (`ProjectsTable`, `EnvironmentsTable`, `ServiceWithContext`), `packages/shared/src/api.ts` (`CreateProjectInputSchema`, `CreateEnvironmentInputSchema`, `DuplicateEnvironmentInputSchema`, updated `CreateServiceInputSchema`), `apps/api/src/routes/projects.ts` (new), `apps/api/src/routes/services.ts` (per-env scoping + `siblingNetworkName` helper + `createSiblings` exported), `apps/api/src/server.ts` (registered `projectsRoutes`), `apps/reconciler/src/loop.ts` (join + ServiceWithContext threading), `apps/reconciler/src/template-runner.ts` (namespaced container name), `apps/reconciler/src/traefik-labels.ts` (namespaced router id), `apps/web/src/app/projects/*`, `apps/web/src/app/projects/[id]/*`, `apps/web/src/app/services/new/create-service-form.tsx`, `apps/web/src/components/nav.tsx`, `apps/web/src/lib/types.ts`. Tests: `packages/shared/tests/api-schemas.test.ts`, `apps/api/tests/services-helpers.test.ts`; existing `apps/reconciler/tests/traefik-labels.test.ts` extended for cross-env collision.
 
+---
+
+## Phase 2 — Shared variables (project / env / service)
+
+Second slice of the Railway-parity roadmap. Variables can now live at three scopes; resolution merges project → environment → service with the service-scope winning. Same-row secrets are encrypted at rest under the existing keyring.
+
+### What shipped
+
+**Schema.** New migration `20260615000001_shared_variables.sql` drops the unused `env_vars` table and creates a `variables` table with three nullable scope FKs (`project_id`, `environment_id`, `service_id`). A CHECK constraint enforces that exactly one is set; a second CHECK enforces the secret-shape invariant (either `value` is set OR `(ciphertext, nonce, key_version)` are set — never both, never neither). Partial unique indexes per scope: `(project_id, key)`, `(environment_id, key)`, `(service_id, key)`. The migration also backfills the latest deployment's `env_snapshot` into service-scoped variable rows so existing services don't lose their env on the next redeploy.
+
+**resolveVariables helper.** `apps/api/src/lib/resolve-variables.ts` exports `resolveVariables(db, keyring, serviceId)` returning the merged plaintext env map, `resolveVariablesWithOrigin(...)` returning `{ value, origin, is_secret }` per key for the effective view, and `affectedServiceIds(db, scope, scopeId)` returning the set of services that would pick up a change. A pure `mergeVariableRows(...)` is split out so the precedence + decryption logic is unit-testable without a live DB.
+
+**Service create + redeploy paths use the resolver.** On `POST /api/services` the form-supplied `input.env` and `input.secrets` become first-class service-scoped variable rows, then `resolveVariables()` produces the initial deployment's `env_snapshot`. On `POST /api/services/:id/deployments`: if the body has no explicit `env`, the route re-resolves variables (instead of carrying forward `latest.env_snapshot`) so a redeploy actually applies recent variable edits. Explicit `body.env` still wins for one-off overrides. Sibling-injected plain env (Redis URLs) still layers on top of resolved variables — same precedence as before.
+
+**Env duplicate copies variables.** `POST /projects/:id/environments/:envId/duplicate` now also copies env-scoped variables from source env → new env and service-scoped variables from each source service → its duplicate. Secrets are re-sealed under a fresh nonce per row so the duplicates are cryptographically independent. Project-scoped vars don't need duplication (the project is unchanged).
+
+**CRUD routes.** `apps/api/src/routes/variables.ts` registers parallel `GET/POST/PATCH/DELETE` handlers under three path prefixes: `/projects/:id/variables`, `/environments/:id/variables`, `/services/:id/variables`. Mutations return `affected_service_ids` so the UI can offer a one-click "Redeploy N to apply" action. The effective endpoint `GET /services/:id/variables/effective` returns the merged map with origin badges. Secret values are masked in every response — they only leave the box as live env vars in a container at deploy time, never as JSON over HTTP.
+
+**Frontend.** New reusable `<VariablesPanel scope={...} scopeId={...} />` component mounts in three places: project detail page (project-scoped section below env tabs), inside each env tab (env-scoped section), and on the service detail page (service-scoped). Each panel surfaces the "Redeploy N services" callout when an edit/delete returns an affected list, with a button that fires `POST /api/services/:id/deployments` for each. A separate `<EffectiveVariables />` view on the service detail page shows the merged map with `project / environment / service` origin badges so operators can see at a glance which scope is winning per key.
+
+**Encryption symmetry with sibling secrets.** Variable secrets reuse the existing `@hotbox/crypto` `seal`/`open` API and master keyring — same encryption story as the managed-sibling DB passwords, no separate key material. The `secrets` table is left untouched and continues to hold sibling-wiring secrets (which have a different lifecycle and aren't user-managed); the two tables coexist deliberately.
+
+**Reveal-secrets UX gap (intentionally deferred).** Secret values are not retrievable from the UI in v1 — only rotation via re-entering a new value. Adding a "reveal" that round-trips a password challenge is a hardening item.
+
+### Verification
+
+- 72 unit tests pass (`pnpm test`), including 7 new `mergeVariableRows` tests covering precedence + secret decryption and 10 new variable-schema validation tests.
+- Typecheck clean across all 9 packages.
+- Manual end-to-end: set `STRIPE_KEY=foo` at project, then `STRIPE_KEY=bar` at env, then `STRIPE_KEY=baz` at service. Effective view shows `baz` with origin=`service`. Delete the service-scoped row, redeploy, container env now has `STRIPE_KEY=bar`. Delete the env-scoped row, redeploy, container env has `STRIPE_KEY=foo`.
+
+Files: `packages/db/migrations/20260615000001_shared_variables.sql`, `packages/db/src/schema.ts` (added `VariablesTable`, `VariableScope`, removed `EnvVarsTable`), `packages/shared/src/api.ts` (`CreateVariableInputSchema`, `UpdateVariableInputSchema`, `VariableScopeSchema`), `apps/api/src/lib/resolve-variables.ts` (new), `apps/api/src/routes/variables.ts` (new), `apps/api/src/routes/services.ts` (create-path now writes variable rows + resolves env_snapshot; redeploy re-resolves when body.env absent), `apps/api/src/routes/projects.ts` (env duplicate copies variables with re-sealed secrets), `apps/api/src/server.ts` (registered `variablesRoutes`), `apps/web/src/components/variables-panel.tsx`, `apps/web/src/components/effective-variables.tsx`, `apps/web/src/app/projects/[id]/project-detail-client.tsx`, `apps/web/src/app/services/[id]/page.tsx`. Tests: `apps/api/tests/resolve-variables.test.ts`, `packages/shared/tests/api-schemas.test.ts` (extended).
+

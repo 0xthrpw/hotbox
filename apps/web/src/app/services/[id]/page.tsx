@@ -5,6 +5,8 @@ import { TopNav } from '@/components/nav';
 import { StatusPill } from '@/components/status-pill';
 import { LogViewer } from '@/components/log-viewer';
 import { ServiceActions } from '@/components/service-actions';
+import { VariablesPanel } from '@/components/variables-panel';
+import { EffectiveVariables } from '@/components/effective-variables';
 import { resolvePanels } from '@/panels/registry';
 
 interface ServicePayload {
@@ -77,6 +79,24 @@ export default async function ServiceDetailPage({ params }: { params: Promise<{ 
             </div>
           </section>
         )}
+
+        <section>
+          <h2 className="text-sm font-semibold mb-2 text-(--color-muted) uppercase tracking-wide">
+            Variables
+          </h2>
+          <p className="text-xs text-(--color-muted) mb-3">
+            Service-scoped variables override environment- and project-scoped values of the same
+            key. The Effective view below shows what the container actually sees.
+          </p>
+          <VariablesPanel scope="service" scopeId={data.service.id} />
+        </section>
+
+        <section>
+          <h2 className="text-sm font-semibold mb-2 text-(--color-muted) uppercase tracking-wide">
+            Effective variables
+          </h2>
+          <EffectiveVariables serviceId={data.service.id} />
+        </section>
 
         <section>
           <h2 className="text-sm font-semibold mb-2 text-(--color-muted) uppercase tracking-wide">Logs</h2>

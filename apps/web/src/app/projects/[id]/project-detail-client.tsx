@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Button, Callout, Field, Input } from '@/components/ui';
 import { StatusPill } from '@/components/status-pill';
+import { VariablesPanel } from '@/components/variables-panel';
 import type {
   EnvironmentWithCount,
   Project,
@@ -131,8 +132,8 @@ export function ProjectDetailClient({
           </div>
 
           {activeEnv && (
-            <div className="mt-4">
-              <div className="flex items-center justify-between mb-3">
+            <div className="mt-4 space-y-6">
+              <div className="flex items-center justify-between">
                 <div className="text-xs text-(--color-muted)">
                   <span className="mono">{activeEnv.slug}</span> · {activeEnv.name}
                 </div>
@@ -191,8 +192,30 @@ export function ProjectDetailClient({
                   </table>
                 )}
               </div>
+
+              <div>
+                <h3 className="text-sm font-semibold mb-2 text-(--color-muted) uppercase tracking-wide">
+                  Environment variables
+                </h3>
+                <p className="text-xs text-(--color-muted) mb-3">
+                  Applied to every service in <span className="mono">{activeEnv.slug}</span>.
+                  Overrides project-scoped values; service-scoped values override these.
+                </p>
+                <VariablesPanel scope="environment" scopeId={activeEnv.id} />
+              </div>
             </div>
           )}
+
+          <section className="mt-8">
+            <h2 className="text-sm font-semibold mb-2 text-(--color-muted) uppercase tracking-wide">
+              Project variables
+            </h2>
+            <p className="text-xs text-(--color-muted) mb-3">
+              Shared across every environment + service in this project. Env- and service-scoped
+              values of the same key win over these.
+            </p>
+            <VariablesPanel scope="project" scopeId={project.id} />
+          </section>
         </>
       )}
     </>

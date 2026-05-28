@@ -7,6 +7,7 @@ import type { CreateServiceInput } from '@hotbox/shared';
 import type { HotboxDb, NetworkRef, SecretRef } from '@hotbox/db';
 import { requireAuth } from './auth.js';
 import { recordAudit } from '../audit.js';
+import { resolveVariables } from '../lib/resolve-variables.js';
 
 interface SiblingPlanResult {
   parentNetworkRefs: NetworkRef[];
@@ -184,13 +185,51 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       });
     }
 
+    // Form-supplied env vars and secrets become first-class service-scoped
+    // variable rows so they show up in the Variables UI and so resolveVariables
+    // returns them on subsequent redeploys. Project/env-level overrides will
+    // win over these once the operator adds them at those scopes.
+    for (const [key, value] of Object.entries(input.env)) {
+      await fastify.ctx.db.insertInto('variables').values({
+        service_id: svc.id,
+        scope: 'service',
+        key,
+        value,
+        is_secret: false,
+        ciphertext: null,
+        nonce: null,
+        key_version: null,
+        project_id: null,
+        environment_id: null,
+      }).execute();
+    }
+    for (const [key, value] of Object.entries(input.secrets)) {
+      const sealed = seal(fastify.ctx.keyring, value);
+      await fastify.ctx.db.insertInto('variables').values({
+        service_id: svc.id,
+        scope: 'service',
+        key,
+        value: null,
+        is_secret: true,
+        ciphertext: sealed.ciphertext,
+        nonce: sealed.nonce,
+        key_version: sealed.keyVersion,
+        project_id: null,
+        environment_id: null,
+      }).execute();
+    }
+
+    // Resolve the full merged map for env_snapshot. Sibling-supplied plain
+    // env (Redis URLs etc.) wins over user variables for the same key, since
+    // overriding sibling wiring would silently break the service.
+    const resolved = await resolveVariables(fastify.ctx.db, fastify.ctx.keyring, svc.id);
     const deployment = await fastify.ctx.db
       .insertInto('deployments')
       .values({
         service_id: svc.id,
         version: 1,
         image: input.image,
-        env_snapshot: { ...input.env, ...sibling.parentExtraEnv },
+        env_snapshot: { ...resolved, ...sibling.parentExtraEnv },
         secret_refs: sibling.parentSecretRefs,
         network_refs: sibling.parentNetworkRefs,
         created_by: req.user.id,
@@ -239,7 +278,16 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
 
     const image = input.image ?? latest?.image;
     if (!image) return reply.code(400).send({ error: 'no previous deployment to reuse image from' });
-    const env = input.env ?? ((latest?.env_snapshot as Record<string, string> | undefined) ?? {});
+
+    // Redeploy snapshot strategy:
+    //   - body.env explicitly provided  → use it verbatim (one-off override path)
+    //   - body.env omitted              → re-resolve variables so this deploy
+    //                                     picks up any project/env/service var
+    //                                     changes since the last deployment
+    // Carrying forward latest.env_snapshot (the old behavior) would silently
+    // ignore variable edits — the whole point of variables is that editing
+    // them and clicking redeploy applies the change.
+    const env = input.env ?? (await resolveVariables(fastify.ctx.db, fastify.ctx.keyring, id));
 
     const deployment = await fastify.ctx.db
       .insertInto('deployments')
