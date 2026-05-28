@@ -70,21 +70,66 @@ export const DuplicateEnvironmentInputSchema = z.object({
 });
 export type DuplicateEnvironmentInput = z.infer<typeof DuplicateEnvironmentInputSchema>;
 
-export const CreateServiceInputSchema = z.object({
-  project_id: z.string().uuid(),
-  environment_id: z.string().uuid(),
-  name: z.string().min(1).max(80),
-  slug: SlugSchema,
-  kind: ServiceKindSchema.default('app'),
-  template: z.string().optional(),
-  image: z.string().min(1),
-  env: z.record(z.string()).default({}),
-  secrets: z.record(z.string()).default({}),
-  hostname: z.string().optional(),
-  public_port: z.number().int().positive().optional(),
-  auto_subdomain: z.boolean().default(false),
-  config: ServiceConfigSchema.partial().default({}),
+export const ImageSourceSchema = z.enum(['image', 'github']);
+export type ImageSource = z.infer<typeof ImageSourceSchema>;
+
+export const GithubSourceInputSchema = z.object({
+  // owner/repo — GitHub's allowed chars are alphanumerics, dash, underscore, dot.
+  repo_full_name: z
+    .string()
+    .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'must be owner/repo'),
+  // Git-ref-safe and, critically, cannot start with '-' so it can't be
+  // misread as a flag by `git clone --branch <value>` (we use execFile with
+  // an arg array, but this is belt-and-suspenders against a leading dash).
+  branch: z
+    .string()
+    .min(1)
+    .max(255)
+    .regex(/^[A-Za-z0-9_][A-Za-z0-9._/-]*$/, 'invalid branch name'),
+  dockerfile_path: z.string().min(1).max(255).default('Dockerfile'),
+  build_context: z.string().min(1).max(255).default('.'),
 });
+export type GithubSourceInput = z.infer<typeof GithubSourceInputSchema>;
+
+export const CreateServiceInputSchema = z
+  .object({
+    project_id: z.string().uuid(),
+    environment_id: z.string().uuid(),
+    name: z.string().min(1).max(80),
+    slug: SlugSchema,
+    kind: ServiceKindSchema.default('app'),
+    template: z.string().optional(),
+    image_source: ImageSourceSchema.default('image'),
+    // Required when image_source='image'; ignored for github (the worker
+    // assigns the built local image). Enforced by the refine below.
+    image: z.string().min(1).optional(),
+    github: GithubSourceInputSchema.optional(),
+    env: z.record(z.string()).default({}),
+    secrets: z.record(z.string()).default({}),
+    hostname: z.string().optional(),
+    public_port: z.number().int().positive().optional(),
+    auto_subdomain: z.boolean().default(false),
+    config: ServiceConfigSchema.partial().default({}),
+  })
+  .refine((v) => v.image_source !== 'image' || (v.image && v.image.length > 0), {
+    message: 'image is required when image_source is "image"',
+    path: ['image'],
+  })
+  .refine((v) => v.image_source !== 'github' || v.github !== undefined, {
+    message: 'github is required when image_source is "github"',
+    path: ['github'],
+  })
+  .refine(
+    (v) => v.image_source !== 'github' || (v.config?.requires ?? []).length === 0,
+    {
+      // Managed siblings aren't supported on github-built services yet — the
+      // sibling wiring would have to attach to a not-yet-built first deploy.
+      // Point operators at variables instead (set DATABASE_URL etc.).
+      message:
+        'managed siblings (requires) are not supported on github services yet — run the dependency as its own service and wire it with a variable',
+      path: ['config', 'requires'],
+    },
+  );
 export type CreateServiceInput = z.infer<typeof CreateServiceInputSchema>;
 
 /**

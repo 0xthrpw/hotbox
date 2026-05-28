@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { apiFetch } from '@/lib/api';
-import type { ServiceDetail, ServiceListItem } from '@/lib/types';
+import type { GithubSource, ServiceDetail, ServiceListItem } from '@/lib/types';
 import { TopNav } from '@/components/nav';
 import { StatusPill } from '@/components/status-pill';
 import { LogViewer } from '@/components/log-viewer';
@@ -8,6 +8,7 @@ import { ServiceActions } from '@/components/service-actions';
 import { VariablesPanel } from '@/components/variables-panel';
 import { EffectiveVariables } from '@/components/effective-variables';
 import { IngressEditor } from '@/components/ingress-editor';
+import { BuildsPanel } from '@/components/builds-panel';
 import { resolvePanels } from '@/panels/registry';
 
 interface ServicePayload {
@@ -15,6 +16,7 @@ interface ServicePayload {
   deployments: Array<{ id: string; version: number; image: string; image_digest: string | null; status: string; created_at: string }>;
   containers: Array<{ id: string; docker_id: string; state: string; started_at: string | null }>;
   siblings: ServiceListItem[];
+  github_source: GithubSource | null;
 }
 
 export default async function ServiceDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -90,6 +92,15 @@ export default async function ServiceDetailPage({ params }: { params: Promise<{ 
                 </tbody>
               </table>
             </div>
+          </section>
+        )}
+
+        {data.service.image_source === 'github' && data.github_source && (
+          <section>
+            <h2 className="text-sm font-semibold mb-2 text-(--color-muted) uppercase tracking-wide">
+              Builds
+            </h2>
+            <BuildsPanel serviceId={data.service.id} source={data.github_source} />
           </section>
         )}
 

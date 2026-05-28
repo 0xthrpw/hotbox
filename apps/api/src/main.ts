@@ -6,6 +6,7 @@ import { loadMasterKey } from '@hotbox/crypto';
 import { buildServer } from './server.js';
 import { Aggregator } from './aggregator.js';
 import { RetentionJob } from './retention.js';
+import { BuildWorker } from './build-worker.js';
 
 async function main(): Promise<void> {
   const dbUrl = required('DATABASE_URL');
@@ -37,7 +38,13 @@ async function main(): Promise<void> {
   const retention = new RetentionJob(db, { info: console.log, error: console.error });
   retention.start();
 
-  const app = await buildServer({ db, docker, reconciler, keyring, hostId, autoSubdomainBase });
+  const buildWorker = new BuildWorker(db, docker, keyring, reconciler, {
+    info: console.log,
+    error: console.error,
+  });
+  buildWorker.start();
+
+  const app = await buildServer({ db, docker, reconciler, buildWorker, keyring, hostId, autoSubdomainBase });
 
   await app.listen({ host: '0.0.0.0', port });
   app.log.info(`hotbox-api listening on :${port}`);
@@ -48,6 +55,7 @@ async function main(): Promise<void> {
       reconciler.stop();
       aggregator.stop();
       retention.stop();
+      buildWorker.stop();
       await app.close();
       await db.destroy();
       process.exit(0);
