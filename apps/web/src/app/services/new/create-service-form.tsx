@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import useSWR from 'swr';
 import { Button, Callout, Field, Input, Select } from '@/components/ui';
+import type { ProjectWithEnvironments } from '@/lib/types';
 
 interface TemplateRow {
   id: string;
@@ -20,9 +21,17 @@ const fetcher = (url: string) => fetch(url, { credentials: 'include' }).then((r)
 
 export function CreateServiceForm() {
   const router = useRouter();
-  const { data: tmplData } = useSWR<{ templates: TemplateRow[] }>('/api/templates', fetcher);
-  const templates = tmplData?.templates ?? [];
+  const params = useSearchParams();
+  const initialProjectId = params.get('projectId') ?? '';
+  const initialEnvId = params.get('envId') ?? '';
 
+  const { data: tmplData } = useSWR<{ templates: TemplateRow[] }>('/api/templates', fetcher);
+  const { data: projData } = useSWR<{ projects: ProjectWithEnvironments[] }>('/api/projects', fetcher);
+  const templates = tmplData?.templates ?? [];
+  const projects = projData?.projects ?? [];
+
+  const [projectId, setProjectId] = useState(initialProjectId);
+  const [environmentId, setEnvironmentId] = useState(initialEnvId);
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
   const [template, setTemplate] = useState('');
@@ -35,6 +44,22 @@ export function CreateServiceForm() {
   const [submitting, setSubmitting] = useState(false);
 
   const selectedTemplate = templates.find((t) => t.id === template);
+  const selectedProject = projects.find((p) => p.id === projectId);
+  const availableEnvs = selectedProject?.environments ?? [];
+
+  // Auto-pick a sensible default project + env once data lands and nothing
+  // came from the URL — keeps the form usable in a single-project setup.
+  useEffect(() => {
+    if (!projectId && projects.length === 1 && projects[0]) setProjectId(projects[0].id);
+  }, [projectId, projects]);
+  useEffect(() => {
+    // If the active project's env list doesn't contain the selected env,
+    // reset to the first env in that project. This catches the case where
+    // the user changes projects after URL-prefilled an env id.
+    if (!availableEnvs.find((e) => e.id === environmentId)) {
+      setEnvironmentId(availableEnvs[0]?.id ?? '');
+    }
+  }, [availableEnvs, environmentId]);
 
   // Auto-fill image when a template is picked (only if image hasn't been touched).
   useEffect(() => {
@@ -52,9 +77,13 @@ export function CreateServiceForm() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    if (!projectId) { setError('Pick a project'); return; }
+    if (!environmentId) { setError('Pick an environment'); return; }
     setSubmitting(true);
     try {
       const body: Record<string, unknown> = {
+        project_id: projectId,
+        environment_id: environmentId,
         name,
         slug,
         kind: 'app',
@@ -87,13 +116,49 @@ export function CreateServiceForm() {
     }
   }
 
+  const noProjects = projData && projects.length === 0;
+
   return (
     <form onSubmit={onSubmit} className="space-y-4">
+      {noProjects && (
+        <Callout tone="warn">
+          No projects yet. <a href="/projects" className="underline">Create one first.</a>
+        </Callout>
+      )}
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Project">
+          <Select value={projectId} onChange={(e) => setProjectId(e.target.value)} required>
+            <option value="">— pick a project —</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>{p.name} ({p.slug})</option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Environment">
+          <Select
+            value={environmentId}
+            onChange={(e) => setEnvironmentId(e.target.value)}
+            required
+            disabled={!projectId || availableEnvs.length === 0}
+          >
+            <option value="">
+              {projectId
+                ? (availableEnvs.length === 0 ? '— no envs in this project —' : '— pick an environment —')
+                : '— pick a project first —'}
+            </option>
+            {availableEnvs.map((e) => (
+              <option key={e.id} value={e.id}>{e.name} ({e.slug})</option>
+            ))}
+          </Select>
+        </Field>
+      </div>
+
       <div className="grid grid-cols-2 gap-3">
         <Field label="Name">
           <Input value={name} onChange={(e) => onNameChange(e.target.value)} placeholder="my-api" required />
         </Field>
-        <Field label="Slug" hint="lowercase, dashes; must be unique">
+        <Field label="Slug" hint="lowercase, dashes; unique within the env">
           <Input
             value={slug}
             onChange={(e) => setSlug(e.target.value)}
@@ -229,10 +294,10 @@ export function CreateServiceForm() {
       {error && <Callout tone="error">{error}</Callout>}
 
       <div className="flex items-center gap-2 pt-2">
-        <Button type="submit" disabled={submitting}>
+        <Button type="submit" disabled={submitting || noProjects}>
           {submitting ? 'Creating…' : 'Create service'}
         </Button>
-        <Button type="button" variant="secondary" onClick={() => router.push('/')}>Cancel</Button>
+        <Button type="button" variant="secondary" onClick={() => router.back()}>Cancel</Button>
       </div>
     </form>
   );

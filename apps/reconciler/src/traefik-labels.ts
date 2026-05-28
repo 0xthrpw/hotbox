@@ -1,4 +1,4 @@
-import type { Service } from '@hotbox/db';
+import type { ServiceWithContext } from '@hotbox/db';
 import type { ContainerSpec } from '@hotbox/shared';
 
 /**
@@ -12,16 +12,20 @@ import type { ContainerSpec } from '@hotbox/shared';
  *     at that file-provider service (and the hotbox-auth ForwardAuth runs).
  *     This is how RPC traffic flows Traefik → ForwardAuth → rpc-proxy → Erigon.
  *   - Otherwise routes directly to this container on `service.public_port`.
+ *
+ * The router/service identifier is namespaced project-env-slug to stay
+ * unique on the host's Traefik provider — without this, two services
+ * sharing the same slug across envs would collide (last-write-wins).
  */
 export function traefikLabelsFor(opts: {
-  service: Service;
+  service: ServiceWithContext;
   container: ContainerSpec | null;     // null = legacy 'primary' role (always ingress)
 }): Record<string, string> {
   const isIngress = opts.container ? opts.container.ingress : true;
   if (!isIngress) return {};
   if (!opts.service.hostname || !opts.service.public_port) return {};
 
-  const id = opts.service.slug;
+  const id = `${opts.service.project_slug}-${opts.service.environment_slug}-${opts.service.slug}`;
   const labels: Record<string, string> = {
     'traefik.enable': 'true',
     [`traefik.http.routers.${id}.rule`]: `Host(\`${opts.service.hostname}\`)`,

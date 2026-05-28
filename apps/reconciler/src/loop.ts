@@ -1,5 +1,5 @@
 import type Dockerode from 'dockerode';
-import type { HotboxDb, Service, Deployment, CurrentState } from '@hotbox/db';
+import type { HotboxDb, ServiceWithContext, Deployment, CurrentState } from '@hotbox/db';
 import type { KeyRing } from '@hotbox/crypto';
 import {
   listManagedContainers,
@@ -74,12 +74,23 @@ export class Reconciler {
   }
 
   private async tick(): Promise<void> {
-    const services = await this.db
+    const services = (await this.db
       .selectFrom('services')
-      .selectAll()
-      .where('host_id', '=', this.hostId)
-      .where('archived_at', 'is', null)
-      .execute();
+      .innerJoin('projects', 'projects.id', 'services.project_id')
+      .innerJoin('environments', 'environments.id', 'services.environment_id')
+      .select([
+        'services.id', 'services.slug', 'services.name', 'services.host_id',
+        'services.project_id', 'services.environment_id', 'services.kind',
+        'services.desired_state', 'services.current_state', 'services.hostname',
+        'services.public_port', 'services.config', 'services.template',
+        'services.owner_id', 'services.parent_service_id',
+        'services.created_at', 'services.updated_at', 'services.archived_at',
+        'projects.slug as project_slug',
+        'environments.slug as environment_slug',
+      ])
+      .where('services.host_id', '=', this.hostId)
+      .where('services.archived_at', 'is', null)
+      .execute()) as ServiceWithContext[];
 
     const containers = await listManagedContainers(this.docker);
     const containersByService = new Map<string, ManagedContainerInfo[]>();
@@ -108,7 +119,7 @@ export class Reconciler {
     }
   }
 
-  private async applyService(service: Service, observed: ManagedContainerInfo[]): Promise<void> {
+  private async applyService(service: ServiceWithContext, observed: ManagedContainerInfo[]): Promise<void> {
     if (service.desired_state === 'stopped' || service.desired_state === 'archived') {
       for (const c of observed) await this.removeContainer(c.id);
       await this.db.updateTable('services').set({ current_state: 'stopped' }).where('id', '=', service.id).execute();
@@ -150,7 +161,7 @@ export class Reconciler {
    * Inspect is one round-trip per container — at our scale (a few services
    * × 1-3 roles each, every 5s) the cost is negligible.
    */
-  private async observeHealth(service: Service, deployment: Deployment): Promise<void> {
+  private async observeHealth(service: ServiceWithContext, deployment: Deployment): Promise<void> {
     const rows = await this.db
       .selectFrom('containers')
       .select(['docker_id'])
@@ -204,7 +215,7 @@ export class Reconciler {
   }
 
   private async applyPlan(
-    service: Service,
+    service: ServiceWithContext,
     deployment: Deployment,
     plan: RolePlan[],
     observed: ManagedContainerInfo[],
@@ -262,7 +273,7 @@ export class Reconciler {
     }
   }
 
-  private async startRole(service: Service, deployment: Deployment, item: RolePlan): Promise<void> {
+  private async startRole(service: ServiceWithContext, deployment: Deployment, item: RolePlan): Promise<void> {
     const digest = await ensureRoleDigest(this.db, this.docker, deployment, item.role, item.image);
 
     const baseLabels: Record<string, string> = {

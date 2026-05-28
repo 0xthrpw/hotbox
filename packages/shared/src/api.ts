@@ -45,13 +45,36 @@ export const ServiceConfigSchema = z.object({
     .default([]),
 });
 
-export const CreateServiceInputSchema = z.object({
+// Shared by projects, environments, services — same character class.
+const SlugSchema = z
+  .string()
+  .min(1)
+  .max(40)
+  .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/, 'lowercase, alphanumerics and dashes');
+
+export const CreateProjectInputSchema = z.object({
   name: z.string().min(1).max(80),
-  slug: z
-    .string()
-    .min(1)
-    .max(40)
-    .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/, 'lowercase, alphanumerics and dashes'),
+  slug: SlugSchema,
+});
+export type CreateProjectInput = z.infer<typeof CreateProjectInputSchema>;
+
+export const CreateEnvironmentInputSchema = z.object({
+  name: z.string().min(1).max(80),
+  slug: SlugSchema,
+});
+export type CreateEnvironmentInput = z.infer<typeof CreateEnvironmentInputSchema>;
+
+export const DuplicateEnvironmentInputSchema = z.object({
+  name: z.string().min(1).max(80),
+  slug: SlugSchema,
+});
+export type DuplicateEnvironmentInput = z.infer<typeof DuplicateEnvironmentInputSchema>;
+
+export const CreateServiceInputSchema = z.object({
+  project_id: z.string().uuid(),
+  environment_id: z.string().uuid(),
+  name: z.string().min(1).max(80),
+  slug: SlugSchema,
   kind: ServiceKindSchema.default('app'),
   template: z.string().optional(),
   image: z.string().min(1),

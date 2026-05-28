@@ -251,3 +251,32 @@ For honest accounting:
 | Builder | In-house image builder (BuildKit/Nixpacks) — deliberately skipped per the plan | — |
 
 The thing most worth doing next IMO is testcontainers-based integration tests for the reconciler. The unit tests cover the pure logic well; the next slice of confidence requires watching the reconciler diff against a real Docker engine.
+
+---
+
+## Phase 1 — Projects + Environments (Railway-parity roadmap)
+
+The five-feature Railway-parity roadmap lives at `~/.claude/plans/hotbox-is-coming-along-toasty-sun.md`. This is the first slice: services now belong to a `(project, environment)` pair, with per-env slug uniqueness instead of the old global flat namespace.
+
+### What shipped
+
+**Schema.** New migration `20260601000001_projects_environments.sql` adds two tables (`projects`, `environments`) and two FK columns (`services.project_id`, `services.environment_id`). The global `services_slug_key` unique constraint is replaced by a partial unique index on `(project_id, environment_id, slug)` so the same slug (`api`) can live in multiple envs. The migration always seeds a `default` project + `production` environment so fresh installs have a place to put their first service; any pre-existing services are auto-assigned to that pair.
+
+**Container + Traefik router naming, namespaced.** Two services with the same slug across envs would collide on the Docker host. Container names now follow `${project_slug}-${env_slug}-${service_slug}-${role}-v${version}`; Traefik router/service IDs in `traefik-labels.ts` follow the same shape. Managed-sibling shared network names also include project+env (`siblingNetworkName()` helper in `services.ts`).
+
+**Existing services churn once on first reconcile after the migration.** Every legacy container's name no longer matches the new pattern, so the reconciler treats them as drift and recreates each one with the new name. ~5s per stateless service; longer for stateful. All services land in `default/production` so the new names are deterministic (`default-production-${slug}-…`). Volume names are *not* namespaced — template-internal `${svc}` interpolation stays slug-only for backward compat. Known follow-up: template-based services with same slug in different envs would share volumes, so for Phase 1 templates should use unique slugs across envs.
+
+**API.** New `apps/api/src/routes/projects.ts` with CRUD for projects + environments and a config-only `duplicate environment` action that re-creates each top-level service in the target env (with fresh sibling secrets — copying the source's `secret_refs` would point at the wrong sibling slugs in the new env's network). `services.ts` now requires `project_id` + `environment_id` on create, scopes slug-uniqueness checks per-env, and joins project+env slugs into list/detail responses. `GET /api/services` accepts `?projectId=` / `?environmentId=` filters.
+
+**Reconciler.** A new `ServiceWithContext` type (`Service` + `project_slug` + `environment_slug`) flows through the reconciler. The tick query joins `projects` + `environments` and selects the slugs alongside the service columns; `buildOptionsForRole` and `traefikLabelsFor` use them for naming.
+
+**Frontend.** New nav entry "Projects" alongside "All services". `/projects` lists projects with a create form; `/projects/[id]` renders environments as tabs, each showing the services in that env, with inline "+ Environment", "Duplicate", and "Delete" (disabled when env is non-empty) actions. The flat `/` dashboard gains a "Project / Env" column and a deep-link into the project view. `/services/new` gained project + env selectors at the top, prefilled from `?projectId=&envId=` query params for in-context creates.
+
+### What didn't ship (Phase 1 scope-cut, documented as follow-ups)
+
+- DB-integration tests for the migration + CRUD flow. The repo has no test harness for live Postgres; adding one is its own piece of work. The plan's verification section covers manual end-to-end checks.
+- Template-internal naming (volumes, template-declared networks) stayed slug-only. Multi-env same-slug template services would share volumes — Phase 3+ can extend `interpolateTemplate` to namespace these once we have a volume-rename migration story.
+- Project / env rename. Both tables have the columns and triggers; a `PATCH` route + UI tweak is straightforward but wasn't strictly required for the slice.
+
+Files: `packages/db/migrations/20260601000001_projects_environments.sql`, `packages/db/src/schema.ts` (`ProjectsTable`, `EnvironmentsTable`, `ServiceWithContext`), `packages/shared/src/api.ts` (`CreateProjectInputSchema`, `CreateEnvironmentInputSchema`, `DuplicateEnvironmentInputSchema`, updated `CreateServiceInputSchema`), `apps/api/src/routes/projects.ts` (new), `apps/api/src/routes/services.ts` (per-env scoping + `siblingNetworkName` helper + `createSiblings` exported), `apps/api/src/server.ts` (registered `projectsRoutes`), `apps/reconciler/src/loop.ts` (join + ServiceWithContext threading), `apps/reconciler/src/template-runner.ts` (namespaced container name), `apps/reconciler/src/traefik-labels.ts` (namespaced router id), `apps/web/src/app/projects/*`, `apps/web/src/app/projects/[id]/*`, `apps/web/src/app/services/new/create-service-form.tsx`, `apps/web/src/components/nav.tsx`, `apps/web/src/lib/types.ts`. Tests: `packages/shared/tests/api-schemas.test.ts`, `apps/api/tests/services-helpers.test.ts`; existing `apps/reconciler/tests/traefik-labels.test.ts` extended for cross-env collision.
+

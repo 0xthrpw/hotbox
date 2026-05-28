@@ -226,6 +226,16 @@ Once the eth-archive is synced and the first service is cut over, set up:
 - **Disk-usage alert at 80%** on `/data` (`SETUP.md` §5). Disk-full corrupts Erigon's MDBX and the only recovery is re-sync.
 - **A `master.key` recovery drill.** Once. Restore it from your backup to a scratch directory and confirm an encrypted secret round-trips through `seal`/`open` (the `crypto/seal.test.ts` pattern). Better to know now than during an incident.
 
+## Upgrading from pre-Phase-1 (projects + environments)
+
+The `20260601000001_projects_environments.sql` migration is one-way for live data:
+
+- A `default` project and `production` environment are auto-created. Every existing service is reassigned to that pair.
+- Container names switch from `${slug}-primary-v${version}` to `${project_slug}-${env_slug}-${slug}-primary-v${version}` (e.g. `nginx-test-primary-v1` becomes `default-production-nginx-test-primary-v1`). Traefik router IDs follow the same shape.
+- Existing containers don't match the new name pattern, so the reconciler treats them as drift and recreates each one on the next tick. Expect ~5s of churn per stateless service the first time the new code runs. Stateful services (Postgres siblings, eth-archive) restart but retain their data volumes.
+
+Operator action: nothing required during the upgrade itself — `docker compose run --rm hotbox-api pnpm db:migrate` applies the schema change, then bring the api/reconciler back up and the rename happens automatically. After the upgrade you can browse to `/projects` in the dashboard and either rename the auto-created `default` project or move services into new projects via the API. Per-project / per-env service creation flows through the existing `/services/new` form, now with project + env selectors at the top.
+
 ## Known gaps not exercised by the trial
 
 The 2026-05-26 trial was HTTP-only on a LAN. These paths run for the first time on production:
