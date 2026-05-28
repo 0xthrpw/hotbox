@@ -15,18 +15,37 @@ interface SiblingPlanResult {
   siblingIds: string[];
 }
 
+const ListServicesQuerySchema = z.object({
+  projectId: z.string().uuid().optional(),
+  environmentId: z.string().uuid().optional(),
+});
+
 export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/services', async (req) => {
     requireAuth(req);
-    const rows = await fastify.ctx.db
+    const { projectId, environmentId } = ListServicesQuerySchema.parse(req.query ?? {});
+    let q = fastify.ctx.db
       .selectFrom('services')
-      .selectAll()
-      .where('host_id', '=', fastify.ctx.hostId)
-      .where('archived_at', 'is', null)
+      .innerJoin('projects', 'projects.id', 'services.project_id')
+      .innerJoin('environments', 'environments.id', 'services.environment_id')
+      .select([
+        'services.id', 'services.slug', 'services.name', 'services.host_id',
+        'services.project_id', 'services.environment_id', 'services.kind',
+        'services.desired_state', 'services.current_state', 'services.hostname',
+        'services.public_port', 'services.config', 'services.template',
+        'services.owner_id', 'services.parent_service_id',
+        'services.created_at', 'services.updated_at', 'services.archived_at',
+        'projects.slug as project_slug', 'projects.name as project_name',
+        'environments.slug as environment_slug', 'environments.name as environment_name',
+      ])
+      .where('services.host_id', '=', fastify.ctx.hostId)
+      .where('services.archived_at', 'is', null)
       // hide managed siblings from the top-level list — they appear under their parent
-      .where('parent_service_id', 'is', null)
-      .orderBy('created_at', 'desc')
-      .execute();
+      .where('services.parent_service_id', 'is', null)
+      .orderBy('services.created_at', 'desc');
+    if (projectId) q = q.where('services.project_id', '=', projectId);
+    if (environmentId) q = q.where('services.environment_id', '=', environmentId);
+    const rows = await q.execute();
     return { services: rows };
   });
 
@@ -35,8 +54,19 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
     const svc = await fastify.ctx.db
       .selectFrom('services')
-      .selectAll()
-      .where('id', '=', id)
+      .innerJoin('projects', 'projects.id', 'services.project_id')
+      .innerJoin('environments', 'environments.id', 'services.environment_id')
+      .select([
+        'services.id', 'services.slug', 'services.name', 'services.host_id',
+        'services.project_id', 'services.environment_id', 'services.kind',
+        'services.desired_state', 'services.current_state', 'services.hostname',
+        'services.public_port', 'services.config', 'services.template',
+        'services.owner_id', 'services.parent_service_id',
+        'services.created_at', 'services.updated_at', 'services.archived_at',
+        'projects.slug as project_slug', 'projects.name as project_name',
+        'environments.slug as environment_slug', 'environments.name as environment_name',
+      ])
+      .where('services.id', '=', id)
       .executeTakeFirst();
     if (!svc) return reply.code(404).send({ error: 'not found' });
     const deployments = await fastify.ctx.db
@@ -65,9 +95,35 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.post('/services', async (req, reply) => {
     requireAuth(req);
     const input = CreateServiceInputSchema.parse(req.body);
+
+    // Verify the env belongs to the named project — prevents an attacker
+    // (or a buggy UI) from creating a service in env X while claiming it
+    // belongs to unrelated project Y. Single lookup serves both checks.
+    const env = await fastify.ctx.db
+      .selectFrom('environments')
+      .innerJoin('projects', 'projects.id', 'environments.project_id')
+      .select([
+        'environments.id as env_id',
+        'environments.slug as env_slug',
+        'projects.id as project_id',
+        'projects.slug as project_slug',
+        'projects.name as project_name',
+        'projects.archived_at as project_archived_at',
+      ])
+      .where('environments.id', '=', input.environment_id)
+      .executeTakeFirst();
+    if (!env || env.project_id !== input.project_id) {
+      return reply.code(400).send({ error: 'environment does not belong to project' });
+    }
+    if (env.project_archived_at) {
+      return reply.code(400).send({ error: 'project is archived' });
+    }
+
     const existing = await fastify.ctx.db
       .selectFrom('services')
       .select('id')
+      .where('project_id', '=', input.project_id)
+      .where('environment_id', '=', input.environment_id)
       .where('slug', '=', input.slug)
       .executeTakeFirst();
     if (existing) return reply.code(409).send({ error: 'slug taken' });
@@ -78,6 +134,8 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       const dup = await fastify.ctx.db
         .selectFrom('services')
         .select('id')
+        .where('project_id', '=', input.project_id)
+        .where('environment_id', '=', input.environment_id)
         .where('slug', '=', siblingSlug)
         .executeTakeFirst();
       if (dup) return reply.code(409).send({ error: `slug taken: ${siblingSlug}` });
@@ -89,6 +147,8 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         slug: input.slug,
         name: input.name,
         host_id: fastify.ctx.hostId,
+        project_id: input.project_id,
+        environment_id: input.environment_id,
         kind: input.kind,
         hostname: input.hostname ?? null,
         public_port: input.public_port ?? null,
@@ -108,7 +168,16 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
     if (requires.length > 0) {
       sibling = await createSiblings({
         db: fastify.ctx.db,
-        parent: { id: svc.id, slug: svc.slug, name: svc.name, hostId: fastify.ctx.hostId },
+        parent: {
+          id: svc.id,
+          slug: svc.slug,
+          name: svc.name,
+          hostId: fastify.ctx.hostId,
+          projectId: input.project_id,
+          projectSlug: env.project_slug,
+          environmentId: input.environment_id,
+          environmentSlug: env.env_slug,
+        },
         requires,
         keyring: fastify.ctx.keyring,
         createdBy: req.user.id,
@@ -135,6 +204,8 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       target_id: svc.id,
       payload: {
         slug: svc.slug,
+        project_id: svc.project_id,
+        environment_id: svc.environment_id,
         template: svc.template,
         image: input.image,
         siblings: sibling.siblingIds,
@@ -245,6 +316,20 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
 }
 
 /**
+ * Compute the shared docker network name that links a parent service to its
+ * managed siblings. Scoped by (project, env, parent slug) so that the same
+ * service slug can exist in multiple envs without their networks colliding
+ * on the host.
+ */
+export function siblingNetworkName(opts: {
+  projectSlug: string;
+  environmentSlug: string;
+  parentSlug: string;
+}): string {
+  return `${opts.projectSlug}-${opts.environmentSlug}-${opts.parentSlug}-net`;
+}
+
+/**
  * For each `requires` entry on a parent service, create the sibling service
  * row + its initial deployment + the encrypted secrets that wire the parent
  * to the sibling.
@@ -257,16 +342,35 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
  *
  * Redis siblings have no auth (the shared network is internal) — we inject a
  * plain `<NAME>_URL=redis://<sibling-slug>:6379/0` into the parent's env.
+ *
+ * NOTE: the connection URL uses the parent's slug-based hostname (e.g.
+ * `myapp-db`) — Docker's DNS resolves it through the shared network. The
+ * shared network name itself includes project+env to stay unique on the host,
+ * but service-to-service DNS within the network only needs the sibling slug
+ * (which is also slug-based, prefixed by the parent slug).
  */
-async function createSiblings(opts: {
+export async function createSiblings(opts: {
   db: HotboxDb;
-  parent: { id: string; slug: string; name: string; hostId: string };
+  parent: {
+    id: string;
+    slug: string;
+    name: string;
+    hostId: string;
+    projectId: string;
+    projectSlug: string;
+    environmentId: string;
+    environmentSlug: string;
+  };
   requires: NonNullable<NonNullable<CreateServiceInput['config']>['requires']>;
   keyring: KeyRing;
   createdBy: string;
 }): Promise<SiblingPlanResult> {
   const { db, parent, requires, keyring, createdBy } = opts;
-  const sharedNetwork = `${parent.slug}-net`;
+  const sharedNetwork = siblingNetworkName({
+    projectSlug: parent.projectSlug,
+    environmentSlug: parent.environmentSlug,
+    parentSlug: parent.slug,
+  });
   const parentNetworkRefs: NetworkRef[] = [{ name: sharedNetwork, internal: true }];
   const parentSecretRefs: SecretRef[] = [];
   const parentExtraEnv: Record<string, string> = {};
@@ -281,6 +385,8 @@ async function createSiblings(opts: {
         slug: siblingSlug,
         name: `${parent.name} — ${req.name}`,
         host_id: parent.hostId,
+        project_id: parent.projectId,
+        environment_id: parent.environmentId,
         kind: req.kind === 'postgres' ? 'managed_pg' : 'managed_redis',
         parent_service_id: parent.id,
         template,

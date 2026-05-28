@@ -57,6 +57,25 @@ export interface SessionsTable {
   created_at: Generated<Timestamp>;
 }
 
+export interface ProjectsTable {
+  id: Generated<string>;
+  slug: string;
+  name: string;
+  owner_id: string | null;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+  archived_at: Timestamp | null;
+}
+
+export interface EnvironmentsTable {
+  id: Generated<string>;
+  project_id: string;
+  slug: string;
+  name: string;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+}
+
 export interface ServiceConfig {
   restart_policy?: 'no' | 'on-failure' | 'always' | 'unless-stopped';
   replace_strategy?: 'start_then_stop' | 'stop_then_start';
@@ -71,6 +90,8 @@ export interface ServicesTable {
   slug: string;
   name: string;
   host_id: string;
+  project_id: string;
+  environment_id: string;
   kind: ServiceKind;
   desired_state: Generated<DesiredState>;
   current_state: Generated<CurrentState>;
@@ -243,6 +264,8 @@ export interface Database {
   hosts: HostsTable;
   users: UsersTable;
   sessions: SessionsTable;
+  projects: ProjectsTable;
+  environments: EnvironmentsTable;
   services: ServicesTable;
   deployments: DeploymentsTable;
   containers: ContainersTable;
@@ -259,9 +282,25 @@ export interface Database {
 
 export type Host = Selectable<HostsTable>;
 export type User = Selectable<UsersTable>;
+export type Project = Selectable<ProjectsTable>;
+export type NewProject = Insertable<ProjectsTable>;
+export type Environment = Selectable<EnvironmentsTable>;
+export type NewEnvironment = Insertable<EnvironmentsTable>;
 export type Service = Selectable<ServicesTable>;
 export type NewService = Insertable<ServicesTable>;
 export type ServiceUpdate = Updateable<ServicesTable>;
+
+/**
+ * A Service row augmented with its project and environment slugs. The
+ * reconciler always reads services through a project/env join so it can
+ * build container names that are unique on the docker host even when two
+ * environments share a service slug (the per-(project, env) uniqueness
+ * landed in the projects/environments migration).
+ */
+export type ServiceWithContext = Service & {
+  project_slug: string;
+  environment_slug: string;
+};
 export type Deployment = Selectable<DeploymentsTable>;
 export type NewDeployment = Insertable<DeploymentsTable>;
 export type Container = Selectable<ContainersTable>;

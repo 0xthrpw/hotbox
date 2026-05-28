@@ -19,7 +19,15 @@ export default async function Dashboard() {
       <TopNav />
       <main className="max-w-6xl mx-auto px-6 py-8">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-lg font-semibold">Services</h1>
+          <div>
+            <h1 className="text-lg font-semibold">All services</h1>
+            <p className="text-xs text-(--color-muted) mt-1">
+              Flat view across every project + environment.{' '}
+              <Link href="/projects" className="text-(--color-accent) hover:underline">
+                Browse by project →
+              </Link>
+            </p>
+          </div>
           <Link
             href="/services/new"
             className="text-sm px-3 py-1.5 rounded bg-(--color-accent) text-white hover:opacity-90"
@@ -38,6 +46,7 @@ export default async function Dashboard() {
               <thead className="bg-(--color-surface) text-(--color-muted)">
                 <tr>
                   <th className="text-left px-4 py-2 font-medium">Service</th>
+                  <th className="text-left px-4 py-2 font-medium">Project / Env</th>
                   <th className="text-left px-4 py-2 font-medium">Kind</th>
                   <th className="text-left px-4 py-2 font-medium">Status</th>
                   <th className="text-left px-4 py-2 font-medium">Hostname</th>
@@ -49,6 +58,11 @@ export default async function Dashboard() {
                     <td className="px-4 py-3">
                       <Link href={`/services/${s.id}`} className="font-medium hover:underline">{s.slug}</Link>
                       <div className="text-(--color-muted) text-xs">{s.name}</div>
+                    </td>
+                    <td className="px-4 py-3 mono text-xs text-(--color-muted)">
+                      <Link href={`/projects/${s.project_id}?env=${s.environment_slug}`} className="hover:underline">
+                        {s.project_slug} / {s.environment_slug}
+                      </Link>
                     </td>
                     <td className="px-4 py-3 text-(--color-muted) mono text-xs">{s.template ?? s.kind}</td>
                     <td className="px-4 py-3"><StatusPill state={s.current_state} /></td>

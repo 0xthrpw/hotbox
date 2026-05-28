@@ -1,5 +1,5 @@
 import type Dockerode from 'dockerode';
-import type { Service, Deployment, HotboxDb } from '@hotbox/db';
+import type { Service, ServiceWithContext, Deployment, HotboxDb } from '@hotbox/db';
 import {
   type Template,
   type ContainerSpec,
@@ -125,7 +125,7 @@ export async function runBootstrap(
  * `<slug>-<role>` are both reachable as DNS names on every joined network.
  */
 export function buildOptionsForRole(opts: {
-  service: Service;
+  service: ServiceWithContext;
   deployment: Deployment;
   role: string;
   container: ContainerSpec | null;
@@ -134,7 +134,10 @@ export function buildOptionsForRole(opts: {
   version: number;
   injectedEnv: Record<string, string>;     // decrypted secrets, merged last
 }): BuildContainerSpecInput {
-  const name = `${opts.service.slug}-${opts.role}-v${opts.version}`;
+  // Container name is namespaced by project + env so two services with the
+  // same slug in different envs don't collide on the docker host (the
+  // services table is unique per (project, env, slug), not globally).
+  const name = `${opts.service.project_slug}-${opts.service.environment_slug}-${opts.service.slug}-${opts.role}-v${opts.version}`;
   const networkRefs = Array.isArray(opts.deployment.network_refs) ? opts.deployment.network_refs : [];
   const deploymentNetworks = networkRefs.map((n) => n.name);
 
