@@ -10,7 +10,13 @@ volumes:
 
 services:
   traefik:
-    image: traefik:v3.2
+    # v3.2's bundled Docker client pins Engine API 1.24, which Docker 29+
+    # rejects ("client version 1.24 is too old; minimum is 1.40") — the
+    # provider then sees no containers, creates no routers, and issues no
+    # certs (you get the self-signed default). v3 (latest 3.x) negotiates the
+    # API version correctly. Note: setting DOCKER_API_VERSION on this service
+    # does NOT help; Traefik ignores it. (Hit on Hivelocity / Docker 29.5.2.)
+    image: traefik:v3
     restart: unless-stopped
     networks: [hotbox-public]
     ports:

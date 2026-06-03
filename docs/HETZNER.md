@@ -53,36 +53,13 @@ sudo chown root:root /etc/hotbox/master.key
 
 **Back this up off-box right now**, before anything else. Don't wait. Recommended: paste into your password manager as a long string, and also write it to an encrypted USB stick that lives somewhere not in the same building.
 
-## 4. Address the ACME email bug (one-time fix before bringing the stack up)
+## 4. Pre-start gotchas (both already handled in the repo)
 
-The trial validated everything except the ACME path (we ran HTTP-only on a LAN). There's one known issue: `infra/traefik/traefik.yml` has `email: ${ACME_EMAIL}` and Traefik **does not substitute env vars in its static YAML config**. As shipped, ACME will try to register with literal `${ACME_EMAIL}` as the email and Let's Encrypt will reject it.
+Two things that bit earlier deploys. Both are fixed in the repo now — this section is so you recognize the symptoms if something looks off, not a to-do.
 
-Fix it on the box before the first start:
+**ACME email — fixed.** Traefik does not substitute env vars in its static `traefik.yml`, so the ACME email is set through `TRAEFIK_*` env vars on the traefik service in `compose.hotbox.yml`, not an `email:` line in the YAML. There are two resolvers: `le-http` (HTTP-01, used by the control-plane hostnames and any custom-hostname service) and `le-dns` (DNS-01 via Cloudflare, used only by the auto-subdomain wildcard). Nothing to edit before first start — just set a valid `ACME_EMAIL` in `.env`. (Let's Encrypt no longer validates deliverability, so a non-existent address still issues, but you lose any account notices — point it at a real inbox.)
 
-Edit `infra/traefik/traefik.yml` and remove the `email:` line entirely:
-
-```yaml
-certificatesResolvers:
-  le:
-    acme:
-      storage: /etc/traefik/acme/acme.json
-      httpChallenge:
-        entryPoint: web
-```
-
-Then set the email via the env-var equivalent in `infra/compose.hotbox.yml` on the traefik service:
-
-```yaml
-  traefik:
-    # ...existing config...
-    environment:
-      TRAEFIK_CERTIFICATESRESOLVERS_LE_ACME_EMAIL: "${ACME_EMAIL}"
-      # ...existing HOTBOX_WEB_HOST / HOTBOX_API_HOST etc. if still there
-```
-
-Traefik *does* substitute env vars when they're presented through `TRAEFIK_*=...` env vars (its standard configuration-via-environment mechanism). This sidesteps the YAML-substitution gap.
-
-Open a PR for this fix when you have a minute; it's a real bug, just one we deferred from the trial PR.
+**Docker Engine 29+ needs Traefik v3, not v3.2 — fixed.** Traefik v3.2's bundled Docker client speaks Engine API 1.24, which Docker 29 rejects (`client version 1.24 is too old. Minimum supported API version is 1.40`). The provider then never sees any containers: no routers are created, no certs issue, and you get Traefik's self-signed default cert with empty `obtained certificate` logs. The compose file now pins `traefik:v3` (latest 3.x), which negotiates the API version correctly. Setting `DOCKER_API_VERSION` on the service does **not** help — Traefik ignores it. (Surfaced on the Hivelocity box running Docker 29.5.2; the LAN trial ran an older Docker, so it never appeared. The `hotbox-api` reconciler uses a Node Docker client that negotiates fine, so only Traefik was affected.)
 
 ## 5. Images
 
