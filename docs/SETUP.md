@@ -233,7 +233,7 @@ On the box, as the `hotbox` user:
 mkdir -p /opt/hotbox && cd /opt/hotbox
 git clone <repo-url> .
 
-cat > .env <<'EOF'
+cat > .env <<EOF
 ACME_EMAIL=ops@your-org.example
 HOTBOX_WEB_HOST=hotbox.example
 HOTBOX_API_HOST=hotbox-api.example
