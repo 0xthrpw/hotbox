@@ -61,7 +61,12 @@ certificatesResolvers:
       storage: /etc/traefik/acme/acme-dns.json
       dnsChallenge:
         provider: cloudflare
-        delayBeforeCheck: 10
         resolvers:
           - "1.1.1.1:53"
           - "8.8.8.8:53"
+        # delayBeforeCheck is deprecated on Traefik v3.7; use propagation.
+        # delayBeforeChecks. Give Cloudflare a head start to propagate the new
+        # TXT record before lego checks it and hands off to Let's Encrypt —
+        # otherwise LE can race ahead and read a stale value.
+        propagation:
+          delayBeforeChecks: 15s

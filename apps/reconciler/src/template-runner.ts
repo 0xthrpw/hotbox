@@ -177,8 +177,11 @@ export function buildOptionsForRole(opts: {
     };
   }
 
-  // legacy non-template 'primary' role
-  const networks = deploymentNetworks;
+  // legacy non-template 'primary' role. The ingress container must join
+  // hotbox-public so Traefik (whose docker provider is pinned to that network)
+  // can reach it — otherwise the container lands on the default bridge and
+  // every routed request 504s.
+  const networks = ['hotbox-public', ...deploymentNetworks];
   return {
     name,
     image: opts.deployment.image,
