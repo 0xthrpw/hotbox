@@ -92,6 +92,7 @@ export class Reconciler {
         'services.public_port', 'services.config', 'services.template',
         'services.owner_id', 'services.parent_service_id',
         'services.created_at', 'services.updated_at', 'services.archived_at',
+        'services.auto_subdomain',
         'projects.slug as project_slug',
         'environments.slug as environment_slug',
       ])
