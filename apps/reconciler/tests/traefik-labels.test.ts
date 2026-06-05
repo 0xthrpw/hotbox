@@ -112,6 +112,53 @@ describe('traefikLabelsFor', () => {
     expect(Object.keys(out).some((k) => k.endsWith('-auto.rule'))).toBe(false);
   });
 
+  it('uses le-dns for a custom hostname that is a single label under the base (reuses the wildcard cert)', () => {
+    const out = traefikLabelsFor({
+      service: svc({ hostname: 'testy.on.hotbox.wtf' }),
+      container: null,
+      autoSubdomainBase: BASE,
+    });
+    expect(out['traefik.http.routers.widget-sales-production-my-app-custom.rule']).toBe(
+      'Host(`testy.on.hotbox.wtf`)',
+    );
+    expect(out['traefik.http.routers.widget-sales-production-my-app-custom.tls.certresolver']).toBe(
+      'le-dns',
+    );
+  });
+
+  it('keeps le-http for a multi-label host under the base (single-level wildcard cannot cover it)', () => {
+    const out = traefikLabelsFor({
+      service: svc({ hostname: 'foo.testy.on.hotbox.wtf' }),
+      container: null,
+      autoSubdomainBase: BASE,
+    });
+    expect(out['traefik.http.routers.widget-sales-production-my-app-custom.tls.certresolver']).toBe(
+      'le-http',
+    );
+  });
+
+  it('keeps le-http for the base domain itself (wildcard does not cover the apex)', () => {
+    const out = traefikLabelsFor({
+      service: svc({ hostname: BASE }),
+      container: null,
+      autoSubdomainBase: BASE,
+    });
+    expect(out['traefik.http.routers.widget-sales-production-my-app-custom.tls.certresolver']).toBe(
+      'le-http',
+    );
+  });
+
+  it('keeps le-http for a host under the base when no base is configured', () => {
+    const out = traefikLabelsFor({
+      service: svc({ hostname: 'testy.on.hotbox.wtf' }),
+      container: null,
+      autoSubdomainBase: null,
+    });
+    expect(out['traefik.http.routers.widget-sales-production-my-app-custom.tls.certresolver']).toBe(
+      'le-http',
+    );
+  });
+
   it('emits an auto-subdomain router with le-dns when only auto_subdomain is set', () => {
     const out = traefikLabelsFor({
       service: svc({ hostname: null, auto_subdomain: true }),

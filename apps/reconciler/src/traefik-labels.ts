@@ -65,7 +65,7 @@ export function traefikLabelsFor(opts: {
     routerId: `${id}-custom`,
     serviceId: id,
     hostname: custom,
-    certResolver: 'le-http',
+    certResolver: certResolverForCustom(custom, opts.autoSubdomainBase),
     via,
   });
 
@@ -78,6 +78,35 @@ export function traefikLabelsFor(opts: {
   });
 
   return labels;
+}
+
+/**
+ * Pick the cert resolver for a custom hostname.
+ *
+ * If the hostname is a single label directly under the auto-subdomain base
+ * (e.g. `testy.on.hotbox.wtf` when the base is `on.hotbox.wtf`), it's already
+ * covered by the wildcard `*.${base}` cert that `le-dns` issues — so reuse
+ * that resolver and skip a redundant per-name HTTP-01 issuance (which would
+ * spend an ACME challenge and an LE rate-limit slot for a cert we already
+ * have). Anything else — a truly external domain, or a multi-label host the
+ * single-level wildcard can't cover — uses `le-http`. Also falls back to
+ * `le-http` when no base is configured, since `le-dns` has no creds then.
+ */
+function certResolverForCustom(
+  hostname: string,
+  autoSubdomainBase: string | null,
+): 'le-http' | 'le-dns' {
+  if (autoSubdomainBase && isSingleLabelUnder(hostname, autoSubdomainBase)) {
+    return 'le-dns';
+  }
+  return 'le-http';
+}
+
+function isSingleLabelUnder(hostname: string, base: string): boolean {
+  const suffix = `.${base}`;
+  if (!hostname.endsWith(suffix)) return false;
+  const label = hostname.slice(0, -suffix.length);
+  return label.length > 0 && !label.includes('.');
 }
 
 function addRouter(
