@@ -21,6 +21,50 @@ const ListServicesQuerySchema = z.object({
   environmentId: z.string().uuid().optional(),
 });
 
+/**
+ * Recreate a service's container to apply a config change that lives in the
+ * container spec / Traefik labels rather than the env snapshot — e.g. an
+ * ingress edit (hostname, public_port, auto_subdomain). The reconciler only
+ * rebuilds a container when the deployment *version* changes, so an in-place
+ * column update would never reach the running container's labels; it would
+ * silently no-op until the next manual redeploy.
+ *
+ * We clone the latest deployment verbatim — same image, same env_snapshot,
+ * same wiring — bumping only the version. Carrying the env snapshot forward
+ * (rather than re-resolving variables like an explicit redeploy does) keeps
+ * the change isolated to the ingress: a hostname tweak must not quietly apply
+ * half-finished variable edits. Returns null when the service has never
+ * deployed, in which case its first deploy picks up the new labels anyway.
+ */
+async function redeployForConfigChange(
+  db: HotboxDb,
+  serviceId: string,
+  userId: string,
+): Promise<{ version: number } | null> {
+  const latest = await db
+    .selectFrom('deployments')
+    .select(['version', 'image', 'env_snapshot', 'secret_refs', 'network_refs'])
+    .where('service_id', '=', serviceId)
+    .orderBy('version', 'desc')
+    .executeTakeFirst();
+  if (!latest) return null;
+
+  const deployment = await db
+    .insertInto('deployments')
+    .values({
+      service_id: serviceId,
+      version: latest.version + 1,
+      image: latest.image,
+      env_snapshot: latest.env_snapshot,
+      secret_refs: (latest.secret_refs as SecretRef[] | undefined) ?? [],
+      network_refs: (latest.network_refs as NetworkRef[] | undefined) ?? [],
+      created_by: userId,
+    })
+    .returning(['version'])
+    .executeTakeFirstOrThrow();
+  return deployment;
+}
+
 export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/services', async (req) => {
     requireAuth(req);
@@ -460,6 +504,12 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       .returningAll()
       .executeTakeFirstOrThrow();
 
+    // An ingress edit only changes container labels, which the reconciler
+    // can't apply to a running container — force a redeploy so the container
+    // is rebuilt with the new labels. Without this the change silently no-ops
+    // until the next manual redeploy.
+    const redeployed = await redeployForConfigChange(fastify.ctx.db, id, req.user.id);
+
     await recordAudit(fastify.ctx.db, req, {
       action: 'service.ingress.update',
       target_kind: 'service',
@@ -469,12 +519,13 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         hostname: updated.hostname,
         public_port: updated.public_port,
         auto_subdomain: updated.auto_subdomain,
+        redeployed_version: redeployed?.version ?? null,
       },
     });
 
-    // Reconcile picks up the new Traefik labels on the next tick (or sooner).
+    // Reconcile picks up the new deployment (and its Traefik labels) at once.
     fastify.ctx.reconciler.reconcileSoon(id);
-    return { service: updated };
+    return { service: updated, deployment: redeployed };
   });
 
   fastify.post('/services/:id/archive', async (req, reply) => {
