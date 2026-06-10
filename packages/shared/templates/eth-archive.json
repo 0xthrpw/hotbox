@@ -51,7 +51,7 @@
       ],
       "volumes": [
         { "name": "{svc}-erigon-data", "mountpoint": "/home/erigon/.local/share/erigon" },
-        { "name": "{svc}-jwt", "mountpoint": "/jwt", "ro": true }
+        { "name": "{svc}-jwt", "mountpoint": "/jwt", "ro": false }
       ],
       "networks": ["{svc}-eth", "hotbox-public"],
       "ingress": true,
