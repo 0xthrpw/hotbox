@@ -14,10 +14,11 @@ interface ScrapeTarget {
 const db = createDb({ connectionString: dbUrl });
 
 async function loadTargets(): Promise<ScrapeTarget[]> {
-  // For v1 we hardcode the Eth node panels via convention: services with
-  // template='eth-archive' get scraped at <slug>-erigon:6061 and
-  // <slug>-lighthouse:5054. Generalising to template-declared panel sources
-  // is a later refactor — keep it simple now.
+  // eth-archive services expose both execution AND Caplin (consensus) metrics on
+  // Erigon's single Prometheus endpoint at <slug>-erigon:6061. (Before we dropped
+  // the external Lighthouse CL this also scraped <slug>-lighthouse:5054 — removed,
+  // since Caplin is embedded in Erigon.) Generalising to template-declared panel
+  // sources is a later refactor — keep it simple now.
   const services = await db
     .selectFrom('services')
     .select(['id', 'slug', 'template'])
@@ -26,10 +27,11 @@ async function loadTargets(): Promise<ScrapeTarget[]> {
     .where('template', '=', 'eth-archive')
     .execute();
 
-  return services.flatMap((s) => [
-    { serviceId: s.id, source: 'erigon' as const, url: `http://${s.slug}-erigon:6061/debug/metrics/prometheus` },
-    { serviceId: s.id, source: 'lighthouse' as const, url: `http://${s.slug}-lighthouse:5054/metrics` },
-  ]);
+  return services.map((s) => ({
+    serviceId: s.id,
+    source: 'erigon' as const,
+    url: `http://${s.slug}-erigon:6061/debug/metrics/prometheus`,
+  }));
 }
 
 async function scrapeOnce(target: ScrapeTarget): Promise<void> {
