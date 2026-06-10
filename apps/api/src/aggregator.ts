@@ -7,7 +7,9 @@ const WINDOW_HOURS = 3;
 
 /**
  * Recomputes hourly aggregates from rpc_requests into rpc_method_stats for the
- * last WINDOW_HOURS *completed* hours. Idempotent — UPSERTs on the natural key.
+ * last WINDOW_HOURS hours, *including* the current partial hour. Idempotent —
+ * UPSERTs on the natural key, so the in-progress bucket is simply overwritten
+ * with fuller counts on every tick and dashboards lag by at most TICK_MS.
  *
  * Why a window: the rpc-proxy buffers writes with a 1s flush, and clock skew
  * between containers can cause rows for hour H to arrive slightly after H+1
@@ -28,7 +30,6 @@ export async function runAggregation(db: HotboxDb): Promise<void> {
       coalesce(percentile_disc(0.99) within group (order by latency_ms), 0)::int as p99_ms
     from rpc_requests
     where time >= date_trunc('hour', now()) - (${WINDOW_HOURS} || ' hours')::interval
-      and time <  date_trunc('hour', now())
     group by 1, 2, 3, 4, 5
     on conflict (hour, service_id, coalesce(token_id, '00000000-0000-0000-0000-000000000000'::uuid), method)
     do update set
