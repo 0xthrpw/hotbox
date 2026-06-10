@@ -19,28 +19,30 @@ describe('template-loader', () => {
     const t = await loadTemplate('eth-archive');
     expect(t.id).toBe('eth-archive');
     const erigon = t.containers.find((c) => c.role === 'erigon');
-    const lighthouse = t.containers.find((c) => c.role === 'lighthouse');
     expect(erigon).toBeDefined();
-    expect(lighthouse).toBeDefined();
     expect(erigon!.ingress).toBe(true);
     expect(erigon!.ingress_via).toBe('hotbox-rpc-proxy@file');
-    expect(lighthouse!.ingress).toBe(false);
-    expect(t.bootstrap[0]?.kind).toBe('random_hex');
-    expect(t.bootstrap[0]?.size).toBe(32);
+    // Erigon runs its built-in Caplin consensus client — there is no external
+    // lighthouse role, and therefore no JWT bootstrap.
+    expect(t.containers).toHaveLength(1);
+    expect(t.containers.find((c) => c.role === 'lighthouse')).toBeUndefined();
+    expect(t.bootstrap).toHaveLength(0);
   });
 
   it('interpolates {svc} in every string position', async () => {
     const t = await loadTemplate('eth-archive');
     const out = interpolateTemplate(t, 'my-node');
     const erigon = out.containers.find((c) => c.role === 'erigon')!;
-    expect(erigon.networks).toContain('my-node-eth');
     expect(erigon.networks).toContain('hotbox-public');
-
-    const lighthouse = out.containers.find((c) => c.role === 'lighthouse')!;
-    expect(lighthouse.command?.some((c) => c.includes('my-node-erigon'))).toBe(true);
+    expect(erigon.volumes.map((v) => v.name)).toContain('my-node-erigon-data');
 
     expect(out.volumes.map((v) => v.name)).toContain('my-node-erigon-data');
-    expect(out.bootstrap[0]?.volume).toBe('my-node-jwt');
+
+    // {svc} is interpolated inside panel source URLs
+    const syncPanel = out.panels.find((p) => p.id === 'sync')!;
+    const promSrc = syncPanel.sources.find((s) => s.type === 'prometheus');
+    expect(promSrc).toBeDefined();
+    expect(promSrc!.url).toContain('my-node-erigon');
   });
 
   it('interpolation is non-mutating', async () => {

@@ -1,40 +1,14 @@
 {
   "id": "eth-archive",
-  "label": "Ethereum Archive (Erigon + Lighthouse)",
-  "description": "Mainnet execution + consensus pair. Erigon v3 archive mode with Lighthouse checkpoint-sync.",
+  "label": "Ethereum Archive (Erigon + Caplin)",
+  "description": "Mainnet Erigon v3 archive node with its built-in Caplin consensus client.",
   "containers": [
-    {
-      "role": "lighthouse",
-      "image": "sigp/lighthouse:v8.1.3",
-      "command": [
-        "lighthouse", "bn",
-        "--network=mainnet",
-        "--execution-endpoint=http://{svc}-erigon:8551",
-        "--execution-jwt=/jwt/jwt.hex",
-        "--checkpoint-sync-url=https://beaconstate.info",
-        "--http", "--http-address=0.0.0.0",
-        "--metrics", "--metrics-address=0.0.0.0",
-        "--datadir=/data"
-      ],
-      "env": {},
-      "ports": [
-        { "container": 9000, "host": 9000, "protocol": "tcp", "bind": "0.0.0.0" },
-        { "container": 9000, "host": 9000, "protocol": "udp", "bind": "0.0.0.0" }
-      ],
-      "volumes": [
-        { "name": "{svc}-lighthouse-data", "mountpoint": "/data" },
-        { "name": "{svc}-jwt", "mountpoint": "/jwt", "ro": true }
-      ],
-      "networks": ["{svc}-eth", "hotbox-public"]
-    },
     {
       "role": "erigon",
       "image": "erigontech/erigon:v3.4.3",
       "command": [
         "--prune.mode=archive",
         "--datadir=/home/erigon/.local/share/erigon",
-        "--authrpc.addr=0.0.0.0",
-        "--authrpc.jwtsecret=/jwt/jwt.hex",
         "--http", "--http.addr=0.0.0.0",
         "--http.api=eth,net,web3,erigon,trace,debug,txpool",
         "--ws",
@@ -50,33 +24,25 @@
         { "container": 42069, "host": 42069, "protocol": "udp", "bind": "0.0.0.0" }
       ],
       "volumes": [
-        { "name": "{svc}-erigon-data", "mountpoint": "/home/erigon/.local/share/erigon" },
-        { "name": "{svc}-jwt", "mountpoint": "/jwt", "ro": false }
+        { "name": "{svc}-erigon-data", "mountpoint": "/home/erigon/.local/share/erigon" }
       ],
-      "networks": ["{svc}-eth", "hotbox-public"],
+      "networks": ["hotbox-public"],
       "ingress": true,
       "ingress_via": "hotbox-rpc-proxy@file"
     }
   ],
   "volumes": [
-    { "name": "{svc}-erigon-data" },
-    { "name": "{svc}-lighthouse-data" },
-    { "name": "{svc}-jwt" }
+    { "name": "{svc}-erigon-data" }
   ],
-  "networks": [
-    { "name": "{svc}-eth", "internal": true }
-  ],
-  "bootstrap": [
-    { "volume": "{svc}-jwt", "path": "jwt.hex", "kind": "random_hex", "size": 32, "mode": "0666" }
-  ],
+  "networks": [],
+  "bootstrap": [],
   "panels": [
     {
       "id": "sync",
       "label": "Sync",
       "component": "EthSyncPanel",
       "sources": [
-        { "type": "prometheus", "name": "erigon", "url": "http://{svc}-erigon:6061/debug/metrics/prometheus" },
-        { "type": "prometheus", "name": "lighthouse", "url": "http://{svc}-lighthouse:5054/metrics" }
+        { "type": "prometheus", "name": "erigon", "url": "http://{svc}-erigon:6061/debug/metrics/prometheus" }
       ]
     },
     {
