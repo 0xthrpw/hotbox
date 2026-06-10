@@ -363,6 +363,17 @@ The response includes the plaintext token **exactly once** — `hbx_rpc_<…>`. 
 
 ### 4.4 First RPC call
 
+The token can be inlined in the URL, Alchemy-style — no headers needed:
+
+```bash
+curl -s -X POST https://rpc.example/hbx_rpc_… \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}'
+```
+
+Or, equivalently, as a bearer header (useful when you'd rather keep the token
+out of URLs and access logs):
+
 ```bash
 curl -s -X POST https://rpc.example \
   -H 'content-type: application/json' \
@@ -381,7 +392,7 @@ Failure modes:
 ### 4.5 Cut over from Alchemy
 
 1. Pick a single low-traffic internal service first.
-2. Flip its RPC URL env var from `https://eth-mainnet.g.alchemy.com/v2/…` to `https://rpc.example` with the bearer token.
+2. Flip its RPC URL env var from `https://eth-mainnet.g.alchemy.com/v2/…` to `https://rpc.example/hbx_rpc_…` — a drop-in URL swap, no header changes needed.
 3. Watch the **EthRpcPanel** in the UI for 24–48 hours. Specifically:
    - Error rate stays near zero.
    - p99 latency is acceptable for your workload.

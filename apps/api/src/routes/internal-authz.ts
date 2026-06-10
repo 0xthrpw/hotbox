@@ -2,9 +2,16 @@ import type { FastifyInstance } from 'fastify';
 import { verifyToken } from '../tokens.js';
 
 /**
- * Traefik ForwardAuth target. Validates the bearer token, checks that the
- * token's service_id (if scoped) matches the routed service, and stamps the
- * token id + tier as response headers so the rpc-proxy can pick them up.
+ * Traefik ForwardAuth target. Validates the token, checks that the token's
+ * service_id (if scoped) matches the routed service, and stamps the token id
+ * + tier as response headers so the rpc-proxy can pick them up.
+ *
+ * The token can arrive two ways, checked in this order:
+ *   1. `Authorization: Bearer hbx_rpc_…` header
+ *   2. inline as the first URL path segment (`https://rpc.example/hbx_rpc_…`),
+ *      Alchemy-style. ForwardAuth hands us the original URI as
+ *      X-Forwarded-Uri; the rpc-proxy never reads the path, so nothing
+ *      downstream has to strip the segment.
  *
  * Returns 200 on success, 401 on missing/invalid/expired, 403 on scope mismatch.
  * MUST stay fast — no audit-log writes on the hot path.
@@ -16,11 +23,21 @@ import { verifyToken } from '../tokens.js';
  * reading it back from anywhere — the reconciler uses the same formula in
  * traefik-labels.ts, so the two must stay in lock-step.
  */
+/** First path segment of X-Forwarded-Uri iff it looks like a hotbox token. */
+export function tokenFromForwardedUri(uri: string | undefined): string | null {
+  if (!uri) return null;
+  const m = /^\/(hbx_[a-z]+_[A-Za-z0-9_-]+)(?:[/?]|$)/.exec(uri);
+  return m?.[1] ?? null;
+}
+
 export async function internalAuthzRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/internal/authz', async (req, reply) => {
     const auth = req.headers['authorization'];
-    if (!auth?.startsWith('Bearer ')) return reply.code(401).send();
-    const plain = auth.slice('Bearer '.length).trim();
+    const fwdUri = req.headers['x-forwarded-uri'];
+    const plain = auth?.startsWith('Bearer ')
+      ? auth.slice('Bearer '.length).trim()
+      : tokenFromForwardedUri(Array.isArray(fwdUri) ? fwdUri[0] : fwdUri);
+    if (!plain) return reply.code(401).send();
     const token = await verifyToken(fastify.ctx.db, plain);
     if (!token) return reply.code(401).send();
 
