@@ -11,6 +11,7 @@
         "--datadir=/home/erigon/.local/share/erigon",
         "--http", "--http.addr=0.0.0.0",
         "--http.api=eth,net,web3,erigon,trace,debug,txpool",
+        "--http.vhosts=*",
         "--ws",
         "--metrics", "--metrics.addr=0.0.0.0", "--metrics.port=6061"
       ],
