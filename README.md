@@ -2,7 +2,7 @@
 
 Internal Railway-style PaaS for a single Hetzner box, designed around running an Ethereum archive node and pointing our services at its RPC.
 
-We were paying Railway for hosting and Alchemy for RPC. Both got expensive. This is the smaller replacement we own.
+Paying Railway for hosting and Alchemy for RPC. Both got expensive. This is the smaller replacement we own.
 
 ## What it is
 
