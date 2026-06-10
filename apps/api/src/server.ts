@@ -13,6 +13,7 @@ import { logsRoutes } from './routes/logs.js';
 import { driftRoutes } from './routes/drift.js';
 import { internalAuthzRoutes } from './routes/internal-authz.js';
 import { metricsRoutes } from './routes/metrics.js';
+import { rpcAnalyticsRoutes } from './routes/rpc-analytics.js';
 import { templatesRoutes } from './routes/templates.js';
 import { auditRoutes } from './routes/audit.js';
 
@@ -46,6 +47,7 @@ export async function buildServer(ctx: AppContext): Promise<FastifyInstance> {
     await logsRoutes(instance);
     await driftRoutes(instance);
     await metricsRoutes(instance);
+    await rpcAnalyticsRoutes(instance);
     await templatesRoutes(instance);
     await auditRoutes(instance);
   }, { prefix: '/api' });

@@ -8,6 +8,7 @@ export function TopNav() {
         <Link href="/projects" className="text-(--color-muted) hover:text-(--color-text)">Projects</Link>
         <Link href="/" className="text-(--color-muted) hover:text-(--color-text)">All services</Link>
         <Link href="/tokens" className="text-(--color-muted) hover:text-(--color-text)">Tokens</Link>
+        <Link href="/analytics" className="text-(--color-muted) hover:text-(--color-text)">Analytics</Link>
         <Link href="/audit" className="text-(--color-muted) hover:text-(--color-text)">Audit</Link>
       </div>
     </nav>
