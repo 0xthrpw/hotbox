@@ -67,7 +67,7 @@
     { "name": "{svc}-eth", "internal": true }
   ],
   "bootstrap": [
-    { "volume": "{svc}-jwt", "path": "jwt.hex", "kind": "random_hex", "size": 32, "mode": "0640" }
+    { "volume": "{svc}-jwt", "path": "jwt.hex", "kind": "random_hex", "size": 32, "mode": "0666" }
   ],
   "panels": [
     {
