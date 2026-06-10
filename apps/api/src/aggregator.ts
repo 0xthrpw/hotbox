@@ -17,9 +17,8 @@ const WINDOW_HOURS = 3;
  */
 export async function runAggregation(db: HotboxDb): Promise<void> {
   await sql`
-    insert into rpc_method_stats (id, hour, service_id, token_id, method, count, error_count, p50_ms, p99_ms)
+    insert into rpc_method_stats (hour, service_id, token_id, method, count, error_count, p50_ms, p99_ms)
     select
-      gen_random_uuid(),
       date_trunc('hour', time) as hour,
       service_id,
       token_id,
@@ -30,7 +29,7 @@ export async function runAggregation(db: HotboxDb): Promise<void> {
       coalesce(percentile_disc(0.99) within group (order by latency_ms), 0)::int as p99_ms
     from rpc_requests
     where time >= date_trunc('hour', now()) - (${WINDOW_HOURS} || ' hours')::interval
-    group by 1, 2, 3, 4, 5
+    group by date_trunc('hour', time), service_id, token_id, method
     on conflict (hour, service_id, coalesce(token_id, '00000000-0000-0000-0000-000000000000'::uuid), method)
     do update set
       count = excluded.count,
