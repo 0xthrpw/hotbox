@@ -11,7 +11,7 @@
         "--network=mainnet",
         "--execution-endpoint=http://{svc}-erigon:8551",
         "--execution-jwt=/jwt/jwt.hex",
-        "--checkpoint-sync-url=https://mainnet.checkpoint.sigp.io",
+        "--checkpoint-sync-url=https://beaconstate.info",
         "--http", "--http-address=0.0.0.0",
         "--metrics", "--metrics-address=0.0.0.0",
         "--datadir=/data"
@@ -25,7 +25,7 @@
         { "name": "{svc}-lighthouse-data", "mountpoint": "/data" },
         { "name": "{svc}-jwt", "mountpoint": "/jwt", "ro": true }
       ],
-      "networks": ["{svc}-eth"]
+      "networks": ["{svc}-eth", "hotbox-public"]
     },
     {
       "role": "erigon",
