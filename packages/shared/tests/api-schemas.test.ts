@@ -6,6 +6,8 @@ import {
   CreateServiceInputSchema,
   CreateVariableInputSchema,
   UpdateVariableInputSchema,
+  CreateInviteInputSchema,
+  SignupInputSchema,
 } from '../src/api.js';
 
 describe('CreateProjectInputSchema', () => {
@@ -159,6 +161,53 @@ describe('CreateVariableInputSchema', () => {
   it('accepts a leading underscore', () => {
     const out = CreateVariableInputSchema.parse({ key: '_INTERNAL', value: 'x' });
     expect(out.key).toBe('_INTERNAL');
+  });
+});
+
+describe('CreateInviteInputSchema', () => {
+  it('accepts an empty body and defaults expiry to 7 days', () => {
+    const out = CreateInviteInputSchema.parse({});
+    expect(out.expires_in_days).toBe(7);
+    expect(out.note).toBeUndefined();
+  });
+
+  it('accepts a note and a custom expiry', () => {
+    const out = CreateInviteInputSchema.parse({ note: 'alice', expires_in_days: 3 });
+    expect(out.note).toBe('alice');
+    expect(out.expires_in_days).toBe(3);
+  });
+
+  it('rejects an expiry outside 1–30 days', () => {
+    expect(() => CreateInviteInputSchema.parse({ expires_in_days: 0 })).toThrow();
+    expect(() => CreateInviteInputSchema.parse({ expires_in_days: 31 })).toThrow();
+  });
+
+  it('rejects a note over 80 chars', () => {
+    expect(() => CreateInviteInputSchema.parse({ note: 'x'.repeat(81) })).toThrow();
+  });
+});
+
+describe('SignupInputSchema', () => {
+  const valid = {
+    token: 'a'.repeat(43),
+    email: 'alice@example.com',
+    password: 'correct-horse-battery',
+  };
+
+  it('accepts a valid payload', () => {
+    expect(SignupInputSchema.parse(valid)).toEqual(valid);
+  });
+
+  it('rejects a password under 10 chars', () => {
+    expect(() => SignupInputSchema.parse({ ...valid, password: 'short9pwd' })).toThrow();
+  });
+
+  it('rejects a malformed email', () => {
+    expect(() => SignupInputSchema.parse({ ...valid, email: 'not-an-email' })).toThrow();
+  });
+
+  it('rejects a too-short token', () => {
+    expect(() => SignupInputSchema.parse({ ...valid, token: 'tiny' })).toThrow();
   });
 });
 
