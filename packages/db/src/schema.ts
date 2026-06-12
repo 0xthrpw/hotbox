@@ -65,6 +65,19 @@ export interface SessionsTable {
   created_at: Generated<Timestamp>;
 }
 
+export interface InvitesTable {
+  id: Generated<string>;
+  token_hash: Buffer;
+  note: string | null;
+  role: Generated<string>;
+  created_by: string;
+  expires_at: Timestamp;
+  used_at: Timestamp | null;
+  used_by: string | null;
+  revoked_at: Timestamp | null;
+  created_at: Generated<Timestamp>;
+}
+
 export interface ProjectsTable {
   id: Generated<string>;
   slug: string;
@@ -325,6 +338,7 @@ export interface Database {
   hosts: HostsTable;
   users: UsersTable;
   sessions: SessionsTable;
+  invites: InvitesTable;
   projects: ProjectsTable;
   environments: EnvironmentsTable;
   services: ServicesTable;
@@ -345,6 +359,7 @@ export interface Database {
 
 export type Host = Selectable<HostsTable>;
 export type User = Selectable<UsersTable>;
+export type Invite = Selectable<InvitesTable>;
 export type Project = Selectable<ProjectsTable>;
 export type NewProject = Insertable<ProjectsTable>;
 export type Environment = Selectable<EnvironmentsTable>;

@@ -9,6 +9,7 @@ import { projectsRoutes } from './routes/projects.js';
 import { variablesRoutes } from './routes/variables.js';
 import { metaRoutes } from './routes/meta.js';
 import { tokensRoutes } from './routes/tokens.js';
+import { usersRoutes } from './routes/users.js';
 import { logsRoutes } from './routes/logs.js';
 import { driftRoutes } from './routes/drift.js';
 import { internalAuthzRoutes } from './routes/internal-authz.js';
@@ -44,6 +45,7 @@ export async function buildServer(ctx: AppContext): Promise<FastifyInstance> {
     await variablesRoutes(instance);
     await servicesRoutes(instance);
     await tokensRoutes(instance);
+    await usersRoutes(instance);
     await logsRoutes(instance);
     await driftRoutes(instance);
     await metricsRoutes(instance);

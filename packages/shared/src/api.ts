@@ -174,6 +174,19 @@ export const LoginInputSchema = z.object({
 });
 export type LoginInput = z.infer<typeof LoginInputSchema>;
 
+export const CreateInviteInputSchema = z.object({
+  note: z.string().max(80).optional(),
+  expires_in_days: z.number().int().min(1).max(30).default(7),
+});
+export type CreateInviteInput = z.infer<typeof CreateInviteInputSchema>;
+
+export const SignupInputSchema = z.object({
+  token: z.string().min(20).max(128),
+  email: z.string().email(),
+  password: z.string().min(10).max(256),
+});
+export type SignupInput = z.infer<typeof SignupInputSchema>;
+
 // POSIX env var name: letter or underscore, then letters/digits/underscores.
 // We deliberately reject lowercase to head off accidental Foo=bar entries
 // that would shadow uppercase ones; container env is case-sensitive but
