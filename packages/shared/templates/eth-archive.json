@@ -5,7 +5,7 @@
   "containers": [
     {
       "role": "erigon",
-      "image": "erigontech/erigon:v3.4.3",
+      "image": "erigontech/erigon:v3.4.4",
       "command": [
         "--prune.mode=archive",
         "--datadir=/home/erigon/.local/share/erigon",
