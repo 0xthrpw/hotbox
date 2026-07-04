@@ -12,6 +12,7 @@ import { requireAuth } from './auth.js';
 import { recordAudit } from '../audit.js';
 import { createSiblings } from './services.js';
 import { resolveVariables } from '../lib/resolve-variables.js';
+import { resolveVolumeRefs } from '../lib/volume-refs.js';
 
 export async function projectsRoutes(fastify: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
@@ -335,8 +336,13 @@ export async function projectsRoutes(fastify: FastifyInstance): Promise<void> {
           env_snapshot: envSnapshot,
           secret_refs: sibling.parentSecretRefs,
           network_refs: sibling.parentNetworkRefs,
-          // Volume refs intentionally NOT copied — duplicate is config-only,
-          // fresh state. Each new service gets empty volumes.
+          // Volume refs are re-derived from the copied config, not copied from
+          // the source deployment: docker volume names are namespaced by the
+          // *new* env slug, so the duplicate gets fresh empty volumes —
+          // duplicate is config-only, never shared state.
+          volume_refs: await resolveVolumeRefs(fastify.ctx.db, newSvc.id),
+          command: src.config?.command ?? null,
+          entrypoint: src.config?.entrypoint ?? null,
           created_by: req.user.id,
         })
         .execute();

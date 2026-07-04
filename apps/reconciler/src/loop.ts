@@ -256,7 +256,17 @@ export class Reconciler {
       );
       const stale = obs.filter((c) => !matching.includes(c));
 
-      const replaceFirst = service.config.replace_strategy === 'stop_then_start';
+      // Volume-backed deployments must never run old and new containers
+      // concurrently (two writers on one datadir — postgres crash-loops on
+      // the postmaster lock, other stores risk corruption). The create route
+      // defaults such services to stop_then_start, but enforce it here too so
+      // any path that grows volumes without passing through that route (a
+      // future config editor, direct DB edits) stays safe. An explicit
+      // start_then_stop choice by the operator is respected.
+      const hasVolumes = Array.isArray(deployment.volume_refs) && deployment.volume_refs.length > 0;
+      const replaceFirst =
+        service.config.replace_strategy === 'stop_then_start' ||
+        (hasVolumes && service.config.replace_strategy === undefined);
       if (replaceFirst) for (const c of stale) await this.removeContainer(c.id);
 
       if (matching.length === 0) {

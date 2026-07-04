@@ -5,6 +5,7 @@ import {
   type ContainerSpec,
   loadTemplate,
   interpolateTemplate,
+  qualifiedServiceName,
   LABEL_MANAGED,
 } from '@hotbox/shared';
 import { open, type KeyRing } from '@hotbox/crypto';
@@ -142,7 +143,22 @@ export function buildOptionsForRole(opts: {
   const deploymentNetworks = networkRefs.map((n) => n.name);
 
   const aliasesFor = (networks: string[]): Record<string, string[]> => {
+    // Short aliases (<slug>, <slug>-<role>) are the convenient names, but on
+    // the shared hotbox-public network they collide when two projects/envs
+    // reuse a slug — docker DNS then round-robins between them. The long
+    // project-env-qualified forms are unambiguous host-wide; prefer them when
+    // wiring services together. Extreme slugs can push the long form past
+    // the 63-char DNS label limit — skip it then (rather than risk the engine
+    // rejecting the container create) and leave the short aliases working.
+    const qualified = qualifiedServiceName({
+      projectSlug: opts.service.project_slug,
+      environmentSlug: opts.service.environment_slug,
+      serviceSlug: opts.service.slug,
+    });
     const aliases = [opts.service.slug, `${opts.service.slug}-${opts.role}`];
+    for (const a of [qualified, `${qualified}-${opts.role}`]) {
+      if (a.length <= 63) aliases.push(a);
+    }
     const out: Record<string, string[]> = {};
     for (const n of networks) out[n] = aliases;
     return out;
@@ -188,11 +204,15 @@ export function buildOptionsForRole(opts: {
     imageDigest: opts.digest,
     labels: opts.baseLabels,
     env: { ...opts.deployment.env_snapshot, ...opts.injectedEnv },
+    command: Array.isArray(opts.deployment.command) ? opts.deployment.command : undefined,
+    entrypoint: Array.isArray(opts.deployment.entrypoint) ? opts.deployment.entrypoint : undefined,
     ports: opts.service.public_port
       ? [{ container: opts.service.public_port, protocol: 'tcp' }]
       : [],
+    // Mount by docker volume name — Mounts[].Source is a *name*, not an id
+    // (a UUID here would create a stray volume literally named the UUID).
     volumes: (Array.isArray(opts.deployment.volume_refs) ? opts.deployment.volume_refs : []).map((v) => ({
-      source: v.volume_id,
+      source: v.name,
       target: v.mountpoint,
       ro: v.ro,
     })),
@@ -252,8 +272,8 @@ export async function decryptSecretEnv(
 }
 
 /**
- * Ensure all networks declared on a deployment exist, respecting the internal
- * flag. Template-level networks are handled separately by ensureTemplateInfra.
+ * Ensure all networks and volumes declared on a deployment exist, respecting
+ * the internal flag. Template-level infra is handled by ensureTemplateInfra.
  */
 export async function ensureDeploymentInfra(
   docker: Dockerode,
@@ -262,6 +282,12 @@ export async function ensureDeploymentInfra(
   const networkRefs = Array.isArray(deployment.network_refs) ? deployment.network_refs : [];
   for (const n of networkRefs) {
     await ensureNetwork(docker, n.name, { internal: n.internal });
+  }
+  // Docker would auto-create a named volume on container create anyway, but
+  // going through ensureVolume applies the hotbox.managed label.
+  const volumeRefs = Array.isArray(deployment.volume_refs) ? deployment.volume_refs : [];
+  for (const v of volumeRefs) {
+    await ensureVolume(docker, v.name);
   }
 }
 

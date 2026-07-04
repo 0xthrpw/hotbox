@@ -19,9 +19,51 @@ export const HealthcheckSchema = z.object({
   retries: z.number().int().nonnegative().default(3),
 });
 
+// Short names for things nested under a service (managed-sibling names,
+// volume names): same character class as slugs, no leading/trailing dash.
+const ShortNameSchema = z
+  .string()
+  .min(1)
+  .max(30)
+  .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/, 'lowercase, alphanumerics and dashes');
+
+/**
+ * A named persistent volume mounted into a plain (non-template) service.
+ * `name` is the operator-facing short name; the docker volume is created as
+ * `<project>-<env>-<service>_<name>` (see dockerVolumeName in naming.ts) so
+ * identical names never collide across services.
+ */
+export const VolumeMountSchema = z.object({
+  name: ShortNameSchema,
+  mountpoint: z
+    .string()
+    .min(2)
+    .max(255)
+    .regex(/^\/(?!\/)/, 'must be an absolute container path'),
+  ro: z.boolean().default(false),
+});
+export type VolumeMount = z.infer<typeof VolumeMountSchema>;
+
+// Exec-form argv, passed straight to docker Cmd/Entrypoint — no shell ever
+// runs, so no quoting/injection concerns beyond basic size limits. Elements
+// may be empty strings (a legal if unusual exec-form argument, and what the
+// parseCommandLine tokenizer produces for bare quotes).
+export const CommandSchema = z.array(z.string().max(1024)).min(1).max(64);
+
 export const ServiceConfigSchema = z.object({
   restart_policy: z.enum(['no', 'on-failure', 'always', 'unless-stopped']).default('on-failure'),
   replace_strategy: z.enum(['start_then_stop', 'stop_then_start']).default('start_then_stop'),
+  volumes: z
+    .array(VolumeMountSchema)
+    .max(8)
+    .default([])
+    .refine((v) => new Set(v.map((x) => x.name)).size === v.length, 'duplicate volume name')
+    .refine(
+      (v) => new Set(v.map((x) => x.mountpoint)).size === v.length,
+      'duplicate volume mountpoint',
+    ),
+  command: CommandSchema.optional(),
+  entrypoint: CommandSchema.optional(),
   resources: z
     .object({
       cpu_quota: z.number().positive().optional(),
@@ -35,15 +77,17 @@ export const ServiceConfigSchema = z.object({
     .array(
       z.object({
         kind: z.enum(['postgres', 'redis']),
-        name: z
-          .string()
-          .min(1)
-          .max(30)
-          .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]?$/, 'lowercase, alphanumerics and dashes'),
+        name: ShortNameSchema,
       }),
     )
     .default([]),
 });
+/**
+ * The shape of a stored `services.config` as clients see it: all fields
+ * optional (the API parses through `.partial()`). Single source of truth for
+ * the web app — don't hand-mirror this interface there.
+ */
+export type ServiceConfigInput = z.input<typeof ServiceConfigSchema>;
 
 // Shared by projects, environments, services — same character class.
 const SlugSchema = z
@@ -129,6 +173,18 @@ export const CreateServiceInputSchema = z
         'managed siblings (requires) are not supported on github services yet — run the dependency as its own service and wire it with a variable',
       path: ['config', 'requires'],
     },
+  )
+  .refine(
+    (v) =>
+      !v.template ||
+      (!v.config?.command && !v.config?.entrypoint && (v.config?.volumes ?? []).length === 0),
+    {
+      // Template roles take command/volumes from the template JSON only;
+      // accepting these here would persist inert values the reconciler never
+      // reads — reject loudly instead of silently ignoring them.
+      message: 'template services define their own command and volumes — config.command/entrypoint/volumes only apply to plain services',
+      path: ['config'],
+    },
   );
 export type CreateServiceInput = z.infer<typeof CreateServiceInputSchema>;
 
@@ -154,6 +210,15 @@ export const CreateDeploymentInputSchema = z.object({
   /** Optional — defaults to the previous deployment's image (= redeploy). */
   image: z.string().min(1).optional(),
   env: z.record(z.string()).optional(),
+  /**
+   * One-off overrides for this deployment — same semantics as `env` above:
+   * not persisted to the service config, so the next plain redeploy reverts
+   * to `config.command` / `config.entrypoint`. Caveat (also true for `env`):
+   * an ingress edit clones the latest deployment verbatim, override included,
+   * so the override survives until a plain redeploy — not just one version.
+   */
+  command: CommandSchema.optional(),
+  entrypoint: CommandSchema.optional(),
 });
 export type CreateDeploymentInput = z.infer<typeof CreateDeploymentInputSchema>;
 

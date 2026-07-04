@@ -9,6 +9,7 @@ import type { KeyRing } from '@hotbox/crypto';
 import type { Reconciler } from '@hotbox/reconciler';
 import { buildImageFromDir, LOCAL_IMAGE_PREFIX } from '@hotbox/docker';
 import { resolveVariables } from './lib/resolve-variables.js';
+import { resolveVolumeRefs } from './lib/volume-refs.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -94,7 +95,7 @@ export class BuildWorker {
       .innerJoin('projects', 'projects.id', 'services.project_id')
       .innerJoin('environments', 'environments.id', 'services.environment_id')
       .select([
-        'services.id', 'services.slug',
+        'services.id', 'services.slug', 'services.config',
         'projects.slug as project_slug',
         'environments.slug as environment_slug',
       ])
@@ -157,7 +158,9 @@ export class BuildWorker {
       // New deployment carries the freshly-resolved variables. Wiring
       // (secret_refs/network_refs) is carried forward from the previous
       // deployment if any — github services have none in 4a, but this keeps
-      // the path identical to a normal redeploy.
+      // the path identical to a normal redeploy. Volumes and command/entrypoint
+      // re-derive from the service config on every build — that's also what
+      // makes the *first* deploy work, where no previous deployment exists.
       const latest = await this.db
         .selectFrom('deployments')
         .select(['version', 'secret_refs', 'network_refs'])
@@ -174,6 +177,9 @@ export class BuildWorker {
         env_snapshot: env,
         secret_refs: (latest?.secret_refs as SecretRef[] | undefined) ?? [],
         network_refs: (latest?.network_refs as NetworkRef[] | undefined) ?? [],
+        volume_refs: await resolveVolumeRefs(this.db, build.service_id),
+        command: service.config.command ?? null,
+        entrypoint: service.config.entrypoint ?? null,
         created_by: null,
       }).execute();
 
