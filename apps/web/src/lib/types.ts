@@ -1,6 +1,10 @@
-import type { CurrentState, DesiredState, ServiceKind } from '@hotbox/shared';
+import type { CurrentState, DesiredState, ServiceKind, ServiceConfigInput } from '@hotbox/shared';
 
 export type { CurrentState, DesiredState, ServiceKind };
+
+/** Stored service config as the API returns it — sourced from the zod schema
+ * in @hotbox/shared so the web app can't drift from the real shape. */
+export type ServiceConfig = ServiceConfigInput;
 
 export interface Project {
   id: string;
@@ -60,7 +64,7 @@ export interface ServiceListItem {
 }
 
 export interface ServiceDetail extends ServiceListItem {
-  config: Record<string, unknown>;
+  config: ServiceConfig;
   created_at: string;
 }
 

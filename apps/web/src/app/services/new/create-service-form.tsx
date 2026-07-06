@@ -3,6 +3,10 @@
 import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import useSWR from 'swr';
+// Subpath import, NOT the barrel: this is a client component and the barrel
+// re-exports template-loader, whose node:fs import would break the browser
+// bundle at next build.
+import { parseCommandLine } from '@hotbox/shared/command';
 import { Button, Callout, Field, Input, Select } from '@/components/ui';
 import type { ProjectWithEnvironments } from '@/lib/types';
 
@@ -16,6 +20,7 @@ interface TemplateRow {
 
 interface EnvRow { key: string; value: string }
 interface RequireRow { kind: 'postgres' | 'redis'; name: string }
+interface VolumeRow { name: string; mountpoint: string }
 
 const fetcher = (url: string) => fetch(url, { credentials: 'include' }).then((r) => r.json());
 
@@ -46,6 +51,8 @@ export function CreateServiceForm() {
   const [autoSubdomain, setAutoSubdomain] = useState(false);
   const [env, setEnv] = useState<EnvRow[]>([]);
   const [requires, setRequires] = useState<RequireRow[]>([]);
+  const [volumes, setVolumes] = useState<VolumeRow[]>([]);
+  const [command, setCommand] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -107,6 +114,7 @@ export function CreateServiceForm() {
         image_source: imageSource,
         env: Object.fromEntries(env.filter((row) => row.key).map((row) => [row.key, row.value])),
       };
+      const config: Record<string, unknown> = {};
       if (imageSource === 'github') {
         body.github = {
           repo_full_name: repoFullName,
@@ -120,9 +128,28 @@ export function CreateServiceForm() {
         // Managed siblings only apply to registry-image services in this slice.
         const filteredRequires = requires.filter((r) => r.name.trim());
         if (filteredRequires.length > 0) {
-          body.config = { requires: filteredRequires };
+          config.requires = filteredRequires;
         }
       }
+      // A half-filled volume row is almost certainly a mistake — silently
+      // dropping it would create the service without persistence, the exact
+      // data loss volumes exist to prevent. Surface it instead.
+      const halfFilled = volumes.find((v) => !v.name.trim() !== !v.mountpoint.trim());
+      if (halfFilled) {
+        setError('volume rows need both a name and a mountpoint — remove the incomplete row or fill it in');
+        return;
+      }
+      const filteredVolumes = volumes.filter((v) => v.name.trim() && v.mountpoint.trim());
+      if (filteredVolumes.length > 0) config.volumes = filteredVolumes;
+      if (command.trim()) {
+        try {
+          config.command = parseCommandLine(command);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'invalid start command');
+          return;
+        }
+      }
+      if (Object.keys(config).length > 0) body.config = config;
       if (hostname) body.hostname = hostname;
       if (publicPort) body.public_port = Number(publicPort);
       if (autoSubdomain) body.auto_subdomain = true;
@@ -347,6 +374,65 @@ export function CreateServiceForm() {
           </div>
         )}
       </div>
+
+      <div>
+        <div className="text-xs text-(--color-muted) mb-2 flex items-start justify-between gap-4">
+          <div>
+            <div>Volumes</div>
+            <p className="text-(--color-muted)/70 mt-0.5">
+              Named persistent volumes — data survives redeploys. Services with volumes
+              replace containers stop-then-start (brief downtime) so two containers never
+              write to one volume.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setVolumes([...volumes, { name: '', mountpoint: '' }])}
+            className="text-(--color-accent) hover:underline text-xs shrink-0"
+          >+ add</button>
+        </div>
+        {volumes.length === 0 ? (
+          <div className="text-xs text-(--color-muted)/70 italic">No volumes</div>
+        ) : (
+          <div className="space-y-2">
+            {volumes.map((row, i) => (
+              <div key={i} className="grid grid-cols-[1fr_2fr_auto] gap-2">
+                <Input
+                  value={row.name}
+                  onChange={(e) =>
+                    setVolumes(volumes.map((r, j) => (i === j ? { ...r, name: e.target.value } : r)))
+                  }
+                  placeholder="data"
+                  pattern="^[a-z0-9][a-z0-9-]*[a-z0-9]?$"
+                />
+                <Input
+                  value={row.mountpoint}
+                  onChange={(e) =>
+                    setVolumes(volumes.map((r, j) => (i === j ? { ...r, mountpoint: e.target.value } : r)))
+                  }
+                  placeholder="/var/lib/postgresql/data"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setVolumes(volumes.filter((_, j) => j !== i))}
+                >×</Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <Field
+        label="Start command"
+        hint="optional — overrides the image CMD; quotes group arguments, no shell runs"
+      >
+        <Input
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          placeholder="postgres -c wal_level=logical"
+        />
+      </Field>
 
       {imageSource === 'image' && (
         <div>

@@ -4,10 +4,11 @@ import { randomBytes } from 'node:crypto';
 import { CreateServiceInputSchema, CreateDeploymentInputSchema, UpdateIngressInputSchema } from '@hotbox/shared';
 import { seal, type KeyRing } from '@hotbox/crypto';
 import type { CreateServiceInput } from '@hotbox/shared';
-import type { HotboxDb, NetworkRef, SecretRef } from '@hotbox/db';
+import type { HotboxDb, NetworkRef, SecretRef, VolumeRef } from '@hotbox/db';
 import { requireAuth } from './auth.js';
 import { recordAudit } from '../audit.js';
 import { resolveVariables } from '../lib/resolve-variables.js';
+import { resolveVolumeRefs } from '../lib/volume-refs.js';
 
 interface SiblingPlanResult {
   parentNetworkRefs: NetworkRef[];
@@ -43,7 +44,10 @@ async function redeployForConfigChange(
 ): Promise<{ version: number } | null> {
   const latest = await db
     .selectFrom('deployments')
-    .select(['version', 'image', 'env_snapshot', 'secret_refs', 'network_refs'])
+    .select([
+      'version', 'image', 'env_snapshot', 'secret_refs', 'network_refs',
+      'volume_refs', 'command', 'entrypoint',
+    ])
     .where('service_id', '=', serviceId)
     .orderBy('version', 'desc')
     .executeTakeFirst();
@@ -58,6 +62,9 @@ async function redeployForConfigChange(
       env_snapshot: latest.env_snapshot,
       secret_refs: (latest.secret_refs as SecretRef[] | undefined) ?? [],
       network_refs: (latest.network_refs as NetworkRef[] | undefined) ?? [],
+      volume_refs: (latest.volume_refs as VolumeRef[] | undefined) ?? [],
+      command: latest.command ?? null,
+      entrypoint: latest.entrypoint ?? null,
       created_by: userId,
     })
     .returning(['version'])
@@ -181,6 +188,15 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       .executeTakeFirst();
     if (existing) return reply.code(409).send({ error: 'slug taken' });
 
+    // Data safety: replacing a container start-then-stop briefly runs old and
+    // new with the same volume mounted — two writers on one datadir (postgres
+    // would crash-loop on the postmaster lock). Default volume-backed services
+    // to stop-then-start unless the operator explicitly chose otherwise.
+    const config = { ...input.config };
+    if ((config.volumes?.length ?? 0) > 0 && !input.config.replace_strategy) {
+      config.replace_strategy = 'stop_then_start';
+    }
+
     const requires = input.config?.requires ?? [];
     for (const r of requires) {
       const siblingSlug = `${input.slug}-${r.name}`;
@@ -206,7 +222,7 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         hostname: input.hostname ?? null,
         public_port: input.public_port ?? null,
         auto_subdomain: input.auto_subdomain,
-        config: input.config,
+        config,
         template: input.template ?? null,
         owner_id: req.user.id,
       })
@@ -288,6 +304,13 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+
+      // Materialise declared volumes now rather than inside the build worker:
+      // pre-creates the volumes rows and surfaces any problem at create time
+      // instead of failing the first build. The build worker re-derives the
+      // refs from config when it creates the deployment.
+      await resolveVolumeRefs(fastify.ctx.db, svc.id);
+
       const build = await fastify.ctx.db
         .insertInto('builds')
         .values({
@@ -331,6 +354,9 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         env_snapshot: { ...resolved, ...sibling.parentExtraEnv },
         secret_refs: sibling.parentSecretRefs,
         network_refs: sibling.parentNetworkRefs,
+        volume_refs: await resolveVolumeRefs(fastify.ctx.db, svc.id),
+        command: config.command ?? null,
+        entrypoint: config.entrypoint ?? null,
         created_by: req.user.id,
       })
       .returningAll()
@@ -367,6 +393,13 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       .where('id', '=', id)
       .executeTakeFirst();
     if (!svc) return reply.code(404).send({ error: 'not found' });
+    if ((input.command || input.entrypoint) && svc.template) {
+      // Template roles run the template-declared command; persisting an
+      // override here would be silently inert. Reject instead.
+      return reply.code(400).send({
+        error: 'template services define their own command — overrides only apply to plain services',
+      });
+    }
 
     const latest = await fastify.ctx.db
       .selectFrom('deployments')
@@ -399,6 +432,12 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         // should not drop the link to managed siblings.
         secret_refs: (latest?.secret_refs as SecretRef[] | undefined) ?? [],
         network_refs: (latest?.network_refs as NetworkRef[] | undefined) ?? [],
+        // Volumes re-derive from config (like env re-resolves from variables)
+        // so a future config edit + redeploy applies it. Command/entrypoint:
+        // body overrides are one-off, otherwise snapshot the config values.
+        volume_refs: await resolveVolumeRefs(fastify.ctx.db, id),
+        command: input.command ?? svc.config.command ?? null,
+        entrypoint: input.entrypoint ?? svc.config.entrypoint ?? null,
         created_by: req.user.id,
       })
       .returningAll()

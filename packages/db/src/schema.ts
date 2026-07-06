@@ -104,6 +104,10 @@ export interface ServiceConfig {
   healthcheck?: { type: 'http' | 'cmd'; path?: string; cmd?: string[]; interval_s?: number; retries?: number };
   stop_grace_period_sec?: number;
   requires?: Array<{ kind: 'postgres' | 'redis'; name: string }>;
+  /** Declared persistent volumes; each deployment snapshots them into volume_refs. */
+  volumes?: Array<{ name: string; mountpoint: string; ro?: boolean }>;
+  command?: string[];
+  entrypoint?: string[];
 }
 
 export interface ServicesTable {
@@ -131,6 +135,8 @@ export interface ServicesTable {
 
 export interface VolumeRef {
   volume_id: string;
+  /** Docker volume name (namespaced `<proj>-<env>-<svc>-<name>`) — the Mount Source. */
+  name: string;
   mountpoint: string;
   ro?: boolean;
 }
