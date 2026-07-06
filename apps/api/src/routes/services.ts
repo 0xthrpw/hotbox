@@ -219,6 +219,11 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         project_id: input.project_id,
         environment_id: input.environment_id,
         kind: input.kind,
+        // Persist the source — without this the column silently keeps its DB
+        // default 'image' and the UI hides the Builds panel + github_source
+        // for every github service (latent since Phase 4a; first hit by the
+        // first live github deploy).
+        image_source: input.image_source,
         hostname: input.hostname ?? null,
         public_port: input.public_port ?? null,
         auto_subdomain: input.auto_subdomain,
