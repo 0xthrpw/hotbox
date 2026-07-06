@@ -9,7 +9,9 @@
     ".": "./src/index.ts",
     "./labels": "./src/labels.ts",
     "./templates": "./src/templates.ts",
-    "./template-loader": "./src/template-loader.ts"
+    "./template-loader": "./src/template-loader.ts",
+    "./command": "./src/command.ts",
+    "./naming": "./src/naming.ts"
   },
   "files": [
     "src",

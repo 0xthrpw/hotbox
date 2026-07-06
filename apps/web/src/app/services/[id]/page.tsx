@@ -1,4 +1,7 @@
 import Link from 'next/link';
+// Subpath import — value imports of the @hotbox/shared barrel don't survive
+// the web bundler (TS-style .js re-exports + node-only template-loader).
+import { dockerVolumeName } from '@hotbox/shared/naming';
 import { apiFetch } from '@/lib/api';
 import type { GithubSource, ServiceDetail, ServiceListItem } from '@/lib/types';
 import { TopNav } from '@/components/nav';
@@ -101,6 +104,55 @@ export default async function ServiceDetailPage({ params }: { params: Promise<{ 
               Builds
             </h2>
             <BuildsPanel serviceId={data.service.id} source={data.github_source} />
+          </section>
+        )}
+
+        {((data.service.config.volumes?.length ?? 0) > 0 || data.service.config.command || data.service.config.entrypoint) && (
+          <section>
+            <h2 className="text-sm font-semibold mb-2 text-(--color-muted) uppercase tracking-wide">
+              Runtime
+            </h2>
+            {(data.service.config.volumes?.length ?? 0) > 0 && (
+              <div className="border border-(--color-border) rounded overflow-hidden mb-3">
+                <table className="w-full text-xs mono">
+                  <thead className="bg-(--color-surface) text-(--color-muted)">
+                    <tr>
+                      <th className="text-left px-3 py-2">volume</th>
+                      <th className="text-left px-3 py-2">mountpoint</th>
+                      <th className="text-left px-3 py-2">mode</th>
+                      <th className="text-left px-3 py-2">docker volume</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.service.config.volumes!.map((v) => (
+                      <tr key={v.name} className="border-t border-(--color-border)">
+                        <td className="px-3 py-2">{v.name}</td>
+                        <td className="px-3 py-2">{v.mountpoint}</td>
+                        <td className="px-3 py-2 text-(--color-muted)">{v.ro ? 'ro' : 'rw'}</td>
+                        <td className="px-3 py-2 text-(--color-muted)">
+                          {dockerVolumeName({
+                            projectSlug: data.service.project_slug,
+                            environmentSlug: data.service.environment_slug,
+                            serviceSlug: data.service.slug,
+                            name: v.name,
+                          })}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {data.service.config.entrypoint && (
+              <p className="text-xs mono text-(--color-muted)">
+                entrypoint: {data.service.config.entrypoint.join(' ')}
+              </p>
+            )}
+            {data.service.config.command && (
+              <p className="text-xs mono text-(--color-muted)">
+                command: {data.service.config.command.join(' ')}
+              </p>
+            )}
           </section>
         )}
 
