@@ -8,7 +8,7 @@ import type { HotboxDb, NetworkRef, SecretRef } from '@hotbox/db';
 import type { KeyRing } from '@hotbox/crypto';
 import type { Reconciler } from '@hotbox/reconciler';
 import { buildImageFromDir, LOCAL_IMAGE_PREFIX } from '@hotbox/docker';
-import { resolveVariables } from './lib/resolve-variables.js';
+import { resolveVariablesWithOrigin, plainVariablesOf } from './lib/resolve-variables.js';
 import { resolveVolumeRefs } from './lib/volume-refs.js';
 
 const execFileAsync = promisify(execFile);
@@ -143,10 +143,22 @@ export class BuildWorker {
       const contextDir = join(workDir, source.build_context);
       appendLog(`Building ${tag} (dockerfile=${source.dockerfile_path}, context=${source.build_context})\n`);
 
+      // Non-secret variables double as docker build args so build-time config
+      // (NEXT_PUBLIC_* and friends) can live in hotbox variables instead of
+      // being committed to the repo. The Dockerfile opts in per key by
+      // declaring a matching ARG. Secrets are deliberately excluded: build
+      // args can surface in build-stage layer history.
+      const resolved = await resolveVariablesWithOrigin(this.db, this.keyring, build.service_id);
+      const buildargs = plainVariablesOf(resolved);
+      if (Object.keys(buildargs).length > 0) {
+        appendLog(`Build args available (values from non-secret variables): ${Object.keys(buildargs).sort().join(', ')}\n`);
+      }
+
       const imageId = await buildImageFromDir(this.docker, {
         contextDir,
         dockerfile: source.dockerfile_path,
         tag,
+        buildargs,
         onLog: appendLog,
       });
       appendLog(`Built image ${imageId}\n`);
@@ -167,7 +179,10 @@ export class BuildWorker {
         .where('service_id', '=', build.service_id)
         .orderBy('version', 'desc')
         .executeTakeFirst();
-      const env = await resolveVariables(this.db, this.keyring, build.service_id);
+      // Reuse the pre-build resolution for the snapshot — resolving twice
+      // could race a concurrent variable edit into a build/runtime mismatch.
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(resolved)) env[k] = v.value;
 
       await this.db.insertInto('deployments').values({
         service_id: build.service_id,

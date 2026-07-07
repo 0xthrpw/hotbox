@@ -94,6 +94,22 @@ function applyRow(
 }
 
 /**
+ * The subset of a resolved map that is safe to expose as docker build args:
+ * keys whose *winning* value is non-secret. Filtering on the winner (not the
+ * row list) means a secret service-scoped override correctly removes the key
+ * even when a plain project-scoped value exists underneath it.
+ */
+export function plainVariablesOf(
+  resolved: Record<string, ResolvedVariable>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(resolved)) {
+    if (!v.is_secret) out[k] = v.value;
+  }
+  return out;
+}
+
+/**
  * For a variable mutation at scope X, return the list of service ids
  * whose effective env would change. Used by the API to tell the UI
  * "Redeploy N services to apply".

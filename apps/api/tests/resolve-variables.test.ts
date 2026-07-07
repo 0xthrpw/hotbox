@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { KeyRing, seal } from '@hotbox/crypto';
 import type { Variable } from '@hotbox/db';
-import { mergeVariableRows } from '../src/lib/resolve-variables.js';
+import { mergeVariableRows, plainVariablesOf } from '../src/lib/resolve-variables.js';
 
 function ring(): KeyRing {
   const r = new KeyRing();
@@ -117,5 +117,29 @@ describe('mergeVariableRows precedence', () => {
 
   it('returns an empty map when all three scopes are empty', () => {
     expect(mergeVariableRows({ projectVars: [], envVars: [], serviceVars: [] }, ring())).toEqual({});
+  });
+});
+
+describe('plainVariablesOf (build args)', () => {
+  it('keeps non-secret winners and drops secret ones', () => {
+    const r = ring();
+    const merged = mergeVariableRows({
+      projectVars: [plainVar({ scope: 'project', key: 'NEXT_PUBLIC_API_URL', value: 'https://api.example' })],
+      envVars: [],
+      serviceVars: [secretVar({ scope: 'service', key: 'DATABASE_URL', plaintext: 'postgres://x', keyring: r })],
+    }, r);
+    expect(plainVariablesOf(merged)).toEqual({ NEXT_PUBLIC_API_URL: 'https://api.example' });
+  });
+
+  it('excludes a key entirely when a secret override shadows a plain value', () => {
+    const r = ring();
+    const merged = mergeVariableRows({
+      projectVars: [plainVar({ scope: 'project', key: 'API_KEY', value: 'public-default' })],
+      envVars: [],
+      serviceVars: [secretVar({ scope: 'service', key: 'API_KEY', plaintext: 'real-secret', keyring: r })],
+    }, r);
+    // The winning value is secret — the plain underlying value must NOT leak
+    // into build args either.
+    expect(plainVariablesOf(merged)).toEqual({});
   });
 });

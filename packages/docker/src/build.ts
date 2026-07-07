@@ -19,6 +19,13 @@ export interface BuildImageOptions {
   dockerfile: string;
   /** Image tag to apply, e.g. hotbox-local/proj-env-slug:abc1234. */
   tag: string;
+  /**
+   * Docker build args. Only reach build steps when the Dockerfile declares a
+   * matching ARG; undeclared keys produce a harmless "not consumed" warning
+   * in the build output. Callers must not pass secrets — arg values can
+   * surface in build-stage layer history.
+   */
+  buildargs?: Record<string, string>;
   /** Called with each chunk of build output for log capture. */
   onLog?: (chunk: string) => void;
 }
@@ -45,6 +52,7 @@ export async function buildImageFromDir(
   const buildStream = await docker.buildImage(context, {
     t: opts.tag,
     dockerfile: opts.dockerfile,
+    buildargs: opts.buildargs ?? {},
   });
 
   await new Promise<void>((resolve, reject) => {
