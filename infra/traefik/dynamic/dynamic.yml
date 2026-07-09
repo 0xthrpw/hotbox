@@ -29,7 +29,7 @@ http:
         accessControlAllowOriginList:
           - "https://relics.bid"
           - "https://www.relics.bid"
-          - "https://efp.app"
+          - "https://efp.rip"
           - "http://localhost:3000"
           - "http://localhost:3443"
         # Any app hosted on the auto-subdomain base (staging/testing fronts).
