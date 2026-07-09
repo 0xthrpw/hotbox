@@ -1,6 +1,44 @@
 http:
   middlewares:
+    # Containers with `ingress_via` get routers labeled `middlewares:
+    # hotbox-auth@file` (traefik-labels.ts). Keeping that name pointed at a
+    # chain lets us extend the pipeline here without relabeling containers —
+    # docker labels are immutable, and relabeling the erigon container would
+    # mean restarting the archive node.
     hotbox-auth:
+      chain:
+        middlewares:
+          - hotbox-rpc-cors
+          - hotbox-authz
+
+    # Browser JSON-RPC (wagmi/viem in relics-app + efp-app) POSTs with
+    # Content-Type: application/json, which always preflights. This must sit
+    # BEFORE the forwardAuth in the chain: Traefik answers the OPTIONS
+    # preflight here directly (rpc-proxy itself has no OPTIONS handling).
+    # CORS is abuse-limiting only — the RPC token ships in the apps' public
+    # JS bundles, so the real protections are token rate limits and the
+    # method allowlist in rpc-proxy.
+    hotbox-rpc-cors:
+      headers:
+        accessControlAllowMethods:
+          - POST
+          - OPTIONS
+        accessControlAllowHeaders:
+          - Content-Type
+          - Authorization
+        accessControlAllowOriginList:
+          - "https://relics.bid"
+          - "https://www.relics.bid"
+          - "https://efp.rip"
+          - "http://localhost:3000"
+          - "http://localhost:3443"
+        # Any app hosted on the auto-subdomain base (staging/testing fronts).
+        accessControlAllowOriginListRegex:
+          - "^https://[a-z0-9-]+\\.on\\.hotbox\\.wtf$"
+        accessControlMaxAge: 86400
+        addVaryHeader: true
+
+    hotbox-authz:
       forwardAuth:
         address: "http://hotbox-api:3000/internal/authz"
         authResponseHeaders:
