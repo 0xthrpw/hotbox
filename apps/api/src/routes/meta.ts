@@ -10,6 +10,7 @@ export async function metaRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/meta', async () => {
     return {
       auto_subdomain_base: fastify.ctx.autoSubdomainBase,
+      api_public_url: fastify.ctx.apiPublicUrl,
     };
   });
 }

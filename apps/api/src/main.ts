@@ -7,6 +7,7 @@ import { buildServer } from './server.js';
 import { Aggregator } from './aggregator.js';
 import { RetentionJob } from './retention.js';
 import { BuildWorker } from './build-worker.js';
+import { loadGithubApp } from './github-app.js';
 
 async function main(): Promise<void> {
   const dbUrl = required('DATABASE_URL');
@@ -21,6 +22,12 @@ async function main(): Promise<void> {
   // null when unset — the reconciler treats auto_subdomain=true as a no-op
   // in that case, so partial deployments (no DNS yet) stay safe.
   const autoSubdomainBase = process.env.HOTBOX_AUTO_SUBDOMAIN_BASE?.trim() || null;
+
+  const apiHost = process.env.HOTBOX_API_HOST?.trim();
+  const apiPublicUrl = apiHost ? `https://${apiHost}` : null;
+
+  const githubApp = await loadGithubApp(process.env);
+  console.log(githubApp ? 'github app: configured' : 'github app: not configured (public repos only)');
 
   const reconciler = new Reconciler({
     db,
@@ -38,13 +45,13 @@ async function main(): Promise<void> {
   const retention = new RetentionJob(db, { info: console.log, error: console.error });
   retention.start();
 
-  const buildWorker = new BuildWorker(db, docker, keyring, reconciler, {
+  const buildWorker = new BuildWorker(db, docker, keyring, reconciler, githubApp, {
     info: console.log,
     error: console.error,
   });
   buildWorker.start();
 
-  const app = await buildServer({ db, docker, reconciler, buildWorker, keyring, hostId, autoSubdomainBase });
+  const app = await buildServer({ db, docker, reconciler, buildWorker, keyring, hostId, autoSubdomainBase, apiPublicUrl, githubApp });
 
   await app.listen({ host: '0.0.0.0', port });
   app.log.info(`hotbox-api listening on :${port}`);

@@ -75,6 +75,7 @@ export interface GithubSource {
   dockerfile_path: string;
   build_context: string;
   last_built_sha: string | null;
+  webhook_secret: string | null;
 }
 
 export interface Build {

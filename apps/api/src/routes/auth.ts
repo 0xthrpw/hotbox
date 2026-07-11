@@ -3,6 +3,7 @@ import { LoginInputSchema, SignupInputSchema } from '@hotbox/shared';
 import { createSession, hashPassword, lookupSession, revokeSession, SESSION_COOKIE_NAME, verifyPassword } from '../auth.js';
 import { hashInviteToken, lookupInvite } from '../invites.js';
 import { recordAudit } from '../audit.js';
+import { verifyToken } from '../tokens.js';
 
 function setSessionCookie(reply: FastifyReply, token: string, expiresAt: Date): void {
   reply.setCookie(SESSION_COOKIE_NAME, token, {
@@ -124,6 +125,55 @@ export async function attachSession(fastify: FastifyInstance): Promise<void> {
       .executeTakeFirst();
     if (user) req.user = user;
   });
+}
+
+/** Scope an api-kind token needs to hit the deploy-trigger routes. */
+export const DEPLOY_SCOPE = 'deploy';
+
+export async function attachApiToken(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('preHandler', async (req) => {
+    const auth = req.headers['authorization'];
+    if (!auth?.startsWith('Bearer ')) return;
+    const plain = auth.slice('Bearer '.length).trim();
+    // Only api-kind tokens are control-plane credentials. rpc tokens
+    // authenticate data-plane requests at the Traefik ForwardAuth layer and
+    // must never double as API auth.
+    if (!plain.startsWith('hbx_api_')) return;
+    const token = await verifyToken(fastify.ctx.db, plain, { touch: true });
+    if (token && token.kind === 'api') {
+      req.apiToken = {
+        id: token.id,
+        serviceId: token.service_id,
+        userId: token.user_id,
+        scopes: token.scopes,
+      };
+    }
+  });
+}
+
+/**
+ * Session users pass unchanged. Bearer tokens pass only with the 'deploy'
+ * scope AND a service_id matching the target: deploy tokens are deliberately
+ * service-scoped so a leaked CI secret can rebuild/redeploy the one service
+ * it was minted for and nothing else. 401 when no credential was presented,
+ * 403 when a token was presented but doesn't authorize this service.
+ */
+export function requireDeployAuth(
+  req: { user?: { id: string }; apiToken?: { id: string; serviceId: string | null; scopes: string[] } },
+  serviceId: string,
+): void {
+  if (req.user) return;
+  const token = req.apiToken;
+  if (!token) {
+    const err = new Error('unauthenticated') as Error & { statusCode: number };
+    err.statusCode = 401;
+    throw err;
+  }
+  if (!token.scopes.includes(DEPLOY_SCOPE) || token.serviceId !== serviceId) {
+    const err = new Error('forbidden') as Error & { statusCode: number };
+    err.statusCode = 403;
+    throw err;
+  }
 }
 
 export function requireAuth(req: { user?: { id: string } }): asserts req is { user: { id: string; email: string; role: string } } {

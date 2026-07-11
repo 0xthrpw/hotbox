@@ -3,7 +3,7 @@ import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import { ZodError } from 'zod';
 import type { AppContext } from './context.js';
-import { attachSession, authRoutes } from './routes/auth.js';
+import { attachApiToken, attachSession, authRoutes } from './routes/auth.js';
 import { servicesRoutes } from './routes/services.js';
 import { projectsRoutes } from './routes/projects.js';
 import { variablesRoutes } from './routes/variables.js';
@@ -13,10 +13,12 @@ import { usersRoutes } from './routes/users.js';
 import { logsRoutes } from './routes/logs.js';
 import { driftRoutes } from './routes/drift.js';
 import { internalAuthzRoutes } from './routes/internal-authz.js';
+import { webhooksRoutes } from './routes/webhooks.js';
 import { metricsRoutes } from './routes/metrics.js';
 import { rpcAnalyticsRoutes } from './routes/rpc-analytics.js';
 import { templatesRoutes } from './routes/templates.js';
 import { auditRoutes } from './routes/audit.js';
+import { githubRoutes } from './routes/github.js';
 
 export async function buildServer(ctx: AppContext): Promise<FastifyInstance> {
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } });
@@ -39,6 +41,7 @@ export async function buildServer(ctx: AppContext): Promise<FastifyInstance> {
 
   await app.register(async (instance) => {
     await attachSession(instance);
+    await attachApiToken(instance);
     await authRoutes(instance);
     await metaRoutes(instance);
     await projectsRoutes(instance);
@@ -52,10 +55,14 @@ export async function buildServer(ctx: AppContext): Promise<FastifyInstance> {
     await rpcAnalyticsRoutes(instance);
     await templatesRoutes(instance);
     await auditRoutes(instance);
+    await githubRoutes(instance);
   }, { prefix: '/api' });
 
   // Internal routes used by Traefik ForwardAuth — no /api prefix, no session.
   await app.register(internalAuthzRoutes);
+
+  // GitHub webhook receivers — no /api prefix, no session; HMAC-authenticated.
+  await app.register(webhooksRoutes);
 
   return app;
 }

@@ -132,6 +132,9 @@ export const GithubSourceInputSchema = z.object({
     .regex(/^[A-Za-z0-9_][A-Za-z0-9._/-]*$/, 'invalid branch name'),
   dockerfile_path: z.string().min(1).max(255).default('Dockerfile'),
   build_context: z.string().min(1).max(255).default('.'),
+  // GitHub App installation to clone through (private repos). Omitted =
+  // credential-less public clone.
+  installation_id: z.number().int().positive().optional(),
 });
 export type GithubSourceInput = z.infer<typeof GithubSourceInputSchema>;
 

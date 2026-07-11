@@ -12,6 +12,8 @@ import { VariablesPanel } from '@/components/variables-panel';
 import { EffectiveVariables } from '@/components/effective-variables';
 import { IngressEditor } from '@/components/ingress-editor';
 import { BuildsPanel } from '@/components/builds-panel';
+import { DeployHookPanel } from '@/components/deploy-hook';
+import { AutoDeployCard } from '@/components/auto-deploy';
 import { resolvePanels } from '@/panels/registry';
 
 interface ServicePayload {
@@ -24,7 +26,10 @@ interface ServicePayload {
 
 export default async function ServiceDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const data = await apiFetch<ServicePayload>(`/api/services/${id}`);
+  const [data, meta] = await Promise.all([
+    apiFetch<ServicePayload>(`/api/services/${id}`),
+    apiFetch<{ api_public_url: string | null }>('/api/meta'),
+  ]);
   const panels = resolvePanels(data.service.template);
 
   return (
@@ -99,13 +104,36 @@ export default async function ServiceDetailPage({ params }: { params: Promise<{ 
         )}
 
         {data.service.image_source === 'github' && data.github_source && (
-          <section>
-            <h2 className="text-sm font-semibold mb-2 text-(--color-muted) uppercase tracking-wide">
-              Builds
-            </h2>
-            <BuildsPanel serviceId={data.service.id} source={data.github_source} />
-          </section>
+          <>
+            <section>
+              <h2 className="text-sm font-semibold mb-2 text-(--color-muted) uppercase tracking-wide">
+                Builds
+              </h2>
+              <BuildsPanel serviceId={data.service.id} source={data.github_source} />
+            </section>
+            <section>
+              <h2 className="text-sm font-semibold mb-2 text-(--color-muted) uppercase tracking-wide">
+                Auto-deploy on push
+              </h2>
+              <AutoDeployCard
+                serviceId={data.service.id}
+                source={data.github_source}
+                apiBase={meta.api_public_url}
+              />
+            </section>
+          </>
         )}
+
+        <section>
+          <h2 className="text-sm font-semibold mb-2 text-(--color-muted) uppercase tracking-wide">
+            CI deploy hook
+          </h2>
+          <DeployHookPanel
+            serviceId={data.service.id}
+            imageSource={data.service.image_source}
+            apiBase={meta.api_public_url}
+          />
+        </section>
 
         {((data.service.config.volumes?.length ?? 0) > 0 || data.service.config.command || data.service.config.entrypoint) && (
           <section>

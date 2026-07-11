@@ -5,7 +5,7 @@ import { CreateServiceInputSchema, CreateDeploymentInputSchema, UpdateIngressInp
 import { seal, type KeyRing } from '@hotbox/crypto';
 import type { CreateServiceInput } from '@hotbox/shared';
 import type { HotboxDb, NetworkRef, SecretRef, VolumeRef } from '@hotbox/db';
-import { requireAuth } from './auth.js';
+import { requireAuth, requireDeployAuth } from './auth.js';
 import { recordAudit } from '../audit.js';
 import { resolveVariables } from '../lib/resolve-variables.js';
 import { resolveVolumeRefs } from '../lib/volume-refs.js';
@@ -145,7 +145,7 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
     const githubSource = svc.image_source === 'github'
       ? await fastify.ctx.db
           .selectFrom('github_sources')
-          .select(['id', 'repo_full_name', 'branch', 'dockerfile_path', 'build_context', 'last_built_sha'])
+          .select(['id', 'repo_full_name', 'branch', 'dockerfile_path', 'build_context', 'last_built_sha', 'webhook_secret'])
           .where('service_id', '=', id)
           .executeTakeFirst()
       : null;
@@ -306,6 +306,10 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
           branch: ghInput.branch,
           dockerfile_path: ghInput.dockerfile_path,
           build_context: ghInput.build_context,
+          installation_id: ghInput.installation_id != null ? String(ghInput.installation_id) : null,
+          // Minted up front so push-to-deploy is a paste-into-GitHub away;
+          // the webhook endpoint 404s until the repo webhook actually exists.
+          webhook_secret: randomBytes(32).toString('base64url'),
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -387,8 +391,9 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   fastify.post('/services/:id/deployments', async (req, reply) => {
-    requireAuth(req);
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    // Session user OR a service-scoped deploy token (CI deploy hook).
+    requireDeployAuth(req, id);
     // Redeploy from the UI sends no body; all fields are optional, treat
     // missing body as the empty object so Zod doesn't reject `null`.
     const input = CreateDeploymentInputSchema.parse(req.body ?? {});
@@ -443,7 +448,7 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
         volume_refs: await resolveVolumeRefs(fastify.ctx.db, id),
         command: input.command ?? svc.config.command ?? null,
         entrypoint: input.entrypoint ?? svc.config.entrypoint ?? null,
-        created_by: req.user.id,
+        created_by: req.user?.id ?? null,
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -453,6 +458,7 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       target_kind: 'deployment',
       target_id: deployment.id,
       payload: { service_id: id, version: deployment.version, image, redeploy: !input.image },
+      actor_token_id: req.apiToken?.id,
     });
 
     fastify.ctx.reconciler.reconcileSoon(id);
@@ -493,8 +499,9 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   fastify.post('/services/:id/builds', async (req, reply) => {
-    requireAuth(req);
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    // Session user OR a service-scoped deploy token (CI deploy hook).
+    requireDeployAuth(req, id);
     const source = await fastify.ctx.db
       .selectFrom('github_sources')
       .selectAll()
@@ -503,12 +510,13 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
     if (!source) {
       return reply.code(400).send({ error: 'service is not backed by a github source' });
     }
+    const triggeredBy = req.user ? 'manual' : 'api';
     const build = await fastify.ctx.db
       .insertInto('builds')
       .values({
         github_source_id: source.id,
         service_id: id,
-        triggered_by: 'manual',
+        triggered_by: triggeredBy,
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -516,10 +524,38 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
       action: 'build.create',
       target_kind: 'service',
       target_id: id,
-      payload: { build_id: build.id, triggered_by: 'manual', branch: source.branch },
+      payload: { build_id: build.id, triggered_by: triggeredBy, branch: source.branch },
+      actor_token_id: req.apiToken?.id,
     });
     fastify.ctx.buildWorker.kick();
     return { build };
+  });
+
+  // Generate (for pre-4b sources) or rotate the per-source webhook secret.
+  // Session-only: a deploy token must not be able to re-key the webhook.
+  fastify.post('/services/:id/webhook-secret', async (req, reply) => {
+    requireAuth(req);
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const source = await fastify.ctx.db
+      .selectFrom('github_sources')
+      .select(['id'])
+      .where('service_id', '=', id)
+      .executeTakeFirst();
+    if (!source) {
+      return reply.code(400).send({ error: 'service is not backed by a github source' });
+    }
+    const secret = randomBytes(32).toString('base64url');
+    await fastify.ctx.db
+      .updateTable('github_sources')
+      .set({ webhook_secret: secret })
+      .where('id', '=', source.id)
+      .execute();
+    await recordAudit(fastify.ctx.db, req, {
+      action: 'webhook_secret.rotate',
+      target_kind: 'service',
+      target_id: id,
+    });
+    return { webhook_secret: secret };
   });
 
   fastify.patch('/services/:id/ingress', async (req, reply) => {

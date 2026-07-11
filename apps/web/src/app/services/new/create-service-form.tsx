@@ -22,6 +22,13 @@ interface EnvRow { key: string; value: string }
 interface RequireRow { kind: 'postgres' | 'redis'; name: string }
 interface VolumeRow { name: string; mountpoint: string }
 
+interface GithubInstallation {
+  installation_id: string;
+  account_login: string;
+  suspended_at: string | null;
+}
+interface GithubRepo { full_name: string; private: boolean; default_branch: string }
+
 const fetcher = (url: string) => fetch(url, { credentials: 'include' }).then((r) => r.json());
 
 export function CreateServiceForm() {
@@ -43,6 +50,8 @@ export function CreateServiceForm() {
   const [imageSource, setImageSource] = useState<'image' | 'github'>('image');
   const [image, setImage] = useState('');
   const [repoFullName, setRepoFullName] = useState('');
+  // '' = credential-less public clone; otherwise a GitHub App installation id.
+  const [installationId, setInstallationId] = useState('');
   const [branch, setBranch] = useState('main');
   const [dockerfilePath, setDockerfilePath] = useState('Dockerfile');
   const [buildContext, setBuildContext] = useState('.');
@@ -58,6 +67,17 @@ export function CreateServiceForm() {
 
   const { data: metaData } = useSWR<{ auto_subdomain_base: string | null }>('/api/meta', fetcher);
   const autoSubdomainBase = metaData?.auto_subdomain_base ?? null;
+
+  const { data: ghInstData } = useSWR<{ configured: boolean; installations: GithubInstallation[] }>(
+    imageSource === 'github' ? '/api/github/installations' : null,
+    fetcher,
+  );
+  const installations = (ghInstData?.installations ?? []).filter((i) => !i.suspended_at);
+  const { data: ghRepoData } = useSWR<{ repos: GithubRepo[] }>(
+    installationId ? `/api/github/repos?installation_id=${installationId}` : null,
+    fetcher,
+  );
+  const installationRepos = ghRepoData?.repos ?? [];
 
   const selectedTemplate = templates.find((t) => t.id === template);
   const selectedProject = projects.find((p) => p.id === projectId);
@@ -121,6 +141,7 @@ export function CreateServiceForm() {
           branch,
           dockerfile_path: dockerfilePath,
           build_context: buildContext,
+          ...(installationId ? { installation_id: Number(installationId) } : {}),
         };
       } else {
         body.image = image;
@@ -264,20 +285,57 @@ export function CreateServiceForm() {
       ) : (
         <>
           <p className="text-xs text-(--color-muted)">
-            hotbox shallow-clones the public repo and builds the image on the host. Pushes
-            don&apos;t auto-deploy yet — use the Rebuild button on the service page. Private
-            repos aren&apos;t supported in this version.
+            hotbox shallow-clones the repo and builds the image on the host. Set up
+            push-to-deploy from the &ldquo;Auto-deploy on push&rdquo; card on the service page.
+            Private repos need a GitHub App installation.
           </p>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Repository" hint="owner/repo (public)">
-              <Input
-                value={repoFullName}
-                onChange={(e) => setRepoFullName(e.target.value)}
-                placeholder="vercel/next.js"
-                pattern="^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$"
-                required
-              />
+          {installations.length > 0 && (
+            <Field label="GitHub App installation" hint="pick one to browse its repos (incl. private)">
+              <Select
+                value={installationId}
+                onChange={(e) => {
+                  setInstallationId(e.target.value);
+                  setRepoFullName('');
+                }}
+              >
+                <option value="">— public repo, no App —</option>
+                {installations.map((i) => (
+                  <option key={i.installation_id} value={i.installation_id}>{i.account_login}</option>
+                ))}
+              </Select>
             </Field>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            {installationId ? (
+              <Field label="Repository">
+                <Select
+                  value={repoFullName}
+                  onChange={(e) => {
+                    setRepoFullName(e.target.value);
+                    const repo = installationRepos.find((r) => r.full_name === e.target.value);
+                    if (repo && branch === 'main') setBranch(repo.default_branch);
+                  }}
+                  required
+                >
+                  <option value="">{ghRepoData ? '— pick a repo —' : 'loading…'}</option>
+                  {installationRepos.map((r) => (
+                    <option key={r.full_name} value={r.full_name}>
+                      {r.full_name}{r.private ? ' (private)' : ''}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            ) : (
+              <Field label="Repository" hint="owner/repo (public)">
+                <Input
+                  value={repoFullName}
+                  onChange={(e) => setRepoFullName(e.target.value)}
+                  placeholder="vercel/next.js"
+                  pattern="^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$"
+                  required
+                />
+              </Field>
+            )}
             <Field label="Branch">
               <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" required />
             </Field>

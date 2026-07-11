@@ -77,10 +77,23 @@ services:
       # auto_subdomain checkbox on a service is silently ignored. See
       # docs/AUTO_SUBDOMAINS.md for the one-time Cloudflare setup.
       HOTBOX_AUTO_SUBDOMAIN_BASE: "${HOTBOX_AUTO_SUBDOMAIN_BASE:-}"
+      # Same host the Traefik router below matches. The API uses it to render
+      # CI deploy-hook snippets and GitHub webhook URLs in the dashboard.
+      HOTBOX_API_HOST: "${HOTBOX_API_HOST}"
+      # GitHub App (private-repo builds + managed push webhooks). All three
+      # must be set together, or all left empty to disable App features.
+      # The private key is a file mount — see the volumes list below and
+      # docs/SETUP.md §"GitHub App".
+      GITHUB_APP_ID: "${GITHUB_APP_ID:-}"
+      GITHUB_APP_PRIVATE_KEY_PATH: "${GITHUB_APP_PRIVATE_KEY_PATH:-}"
+      GITHUB_APP_WEBHOOK_SECRET: "${GITHUB_APP_WEBHOOK_SECRET:-}"
       PORT: "3000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /etc/hotbox/master.key:/etc/hotbox/master.key:ro
+      # Uncomment when the GitHub App is configured (path must match
+      # GITHUB_APP_PRIVATE_KEY_PATH):
+      # - /etc/hotbox/github-app.pem:/etc/hotbox/github-app.pem:ro
     labels:
       hotbox.managed: "true"
       traefik.enable: "true"

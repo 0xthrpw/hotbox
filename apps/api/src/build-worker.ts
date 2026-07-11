@@ -10,6 +10,7 @@ import type { Reconciler } from '@hotbox/reconciler';
 import { buildImageFromDir, LOCAL_IMAGE_PREFIX } from '@hotbox/docker';
 import { resolveVariablesWithOrigin, plainVariablesOf } from './lib/resolve-variables.js';
 import { resolveVolumeRefs } from './lib/volume-refs.js';
+import type { GithubAppClient } from './github-app.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -41,6 +42,7 @@ export class BuildWorker {
     private readonly docker: Dockerode,
     private readonly keyring: KeyRing,
     private readonly reconciler: Reconciler,
+    private readonly githubApp: GithubAppClient | null,
     private readonly logger: Logger,
   ) {}
 
@@ -109,8 +111,14 @@ export class BuildWorker {
 
     let workDir: string | null = null;
     let log = '';
+    // Installation token for private-repo clones. Everything that can end up
+    // in the persisted build log (docker/git output, error messages — git
+    // prints the remote URL, credentials included, on clone failures) is
+    // scrubbed of it.
+    let cloneToken: string | null = null;
+    const redact = (s: string) => (cloneToken ? s.split(cloneToken).join('***') : s);
     const appendLog = (chunk: string) => {
-      log += chunk;
+      log += redact(chunk);
       if (log.length > LOG_CAP_BYTES) {
         log = `…(truncated)…\n${log.slice(log.length - LOG_CAP_BYTES)}`;
       }
@@ -123,10 +131,20 @@ export class BuildWorker {
 
       workDir = await mkdtemp(join(tmpdir(), 'hotbox-build-'));
       const repoUrl = `https://github.com/${source.repo_full_name}.git`;
+      let cloneUrl = repoUrl;
+      if (source.installation_id) {
+        if (!this.githubApp) {
+          throw new Error(
+            'source is linked to a GitHub App installation but GITHUB_APP_* is not configured on this host',
+          );
+        }
+        cloneToken = await this.githubApp.installationToken(Number(source.installation_id));
+        cloneUrl = `https://x-access-token:${cloneToken}@github.com/${source.repo_full_name}.git`;
+      }
       appendLog(`$ git clone --depth 1 --branch ${source.branch} ${repoUrl}\n`);
       await execFileAsync('git', [
         'clone', '--depth', '1', '--branch', source.branch, '--single-branch',
-        repoUrl, workDir,
+        cloneUrl, workDir,
       ], { timeout: 120_000 });
 
       const sha = (await execFileAsync('git', ['-C', workDir, 'rev-parse', 'HEAD'])).stdout.trim();
@@ -208,10 +226,10 @@ export class BuildWorker {
       this.reconciler.reconcileSoon(build.service_id);
       this.logger.info(`build ${shortSha} for ${service.slug} succeeded`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = redact(err instanceof Error ? err.message : String(err));
       appendLog(`\nBUILD FAILED: ${msg}\n`);
       await this.fail(buildId, msg, log);
-      this.logger.error(`build ${buildId} failed`, err);
+      this.logger.error(`build ${buildId} failed: ${msg}`);
     } finally {
       if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => {});
     }

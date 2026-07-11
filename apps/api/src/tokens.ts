@@ -50,15 +50,40 @@ export async function issueToken(
 export async function verifyToken(
   db: HotboxDb,
   plain: string,
-): Promise<{ id: string; service_id: string | null; tier: TokenTier; scopes: string[] } | null> {
+  opts: { touch?: boolean } = {},
+): Promise<{
+  id: string;
+  kind: TokenKind;
+  service_id: string | null;
+  user_id: string | null;
+  tier: TokenTier;
+  scopes: string[];
+} | null> {
   const hash = createHash('sha256').update(plain).digest();
   const row = await db
     .selectFrom('tokens')
-    .select(['id', 'service_id', 'tier', 'scopes', 'expires_at', 'revoked_at'])
+    .select(['id', 'kind', 'service_id', 'user_id', 'tier', 'scopes', 'expires_at', 'revoked_at'])
     .where('hash', '=', hash)
     .executeTakeFirst();
   if (!row) return null;
   if (row.revoked_at) return null;
   if (row.expires_at && row.expires_at < new Date()) return null;
-  return { id: row.id, service_id: row.service_id, tier: row.tier, scopes: row.scopes };
+  if (opts.touch) {
+    // Fire-and-forget: last_used_at is display metadata and must never fail
+    // or slow the request. Opt-in so the Traefik ForwardAuth hot path
+    // (internal-authz) doesn't pay a write per RPC request.
+    db.updateTable('tokens')
+      .set({ last_used_at: new Date() })
+      .where('id', '=', row.id)
+      .execute()
+      .catch(() => {});
+  }
+  return {
+    id: row.id,
+    kind: row.kind,
+    service_id: row.service_id,
+    user_id: row.user_id,
+    tier: row.tier,
+    scopes: row.scopes,
+  };
 }

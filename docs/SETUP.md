@@ -294,6 +294,48 @@ docker compose -f compose.hotbox.yml --env-file ../.env up -d --force-recreate h
 
 Browse to `https://hotbox.example`, sign in with the seeded admin. You're done with the platform setup.
 
+### 3.9 GitHub App (optional): private repos + managed push webhooks
+
+Without this, github-source services still work — public repos only, with
+per-repo webhooks you paste in by hand (the "Auto-deploy on push" card on the
+service page). The App adds private-repo clones, a repo picker in the create
+form, and a single managed webhook for every installed repo.
+
+1. GitHub → Settings → Developer settings → GitHub Apps → **New GitHub App**:
+   - Homepage URL: your dashboard URL. Webhook URL:
+     `https://<HOTBOX_API_HOST>/webhooks/github-app`. Set a strong
+     **Webhook secret** (`openssl rand -base64 32`).
+   - Repository permissions: **Contents: Read-only**, **Metadata: Read-only**.
+   - Subscribe to events: **Push**. (Installation lifecycle events are always
+     delivered.)
+   - Where can it be installed: "Only on this account" is fine.
+2. After creating: note the **App ID**, then **Generate a private key** — a
+   `.pem` downloads. Put it on the box:
+
+   ```bash
+   scp the-app.private-key.pem deploy@<box>:/etc/hotbox/github-app.pem
+   ssh deploy@<box> chmod 600 /etc/hotbox/github-app.pem
+   ```
+
+3. In `.env` set all three (the api fails fast on a partial set):
+
+   ```bash
+   GITHUB_APP_ID=123456
+   GITHUB_APP_PRIVATE_KEY_PATH=/etc/hotbox/github-app.pem
+   GITHUB_APP_WEBHOOK_SECRET=<the webhook secret>
+   ```
+
+   Uncomment the `github-app.pem` mount in `compose.hotbox.yml`, then recreate
+   the api container.
+4. **Install** the App on your account/org, choosing the repos hotbox may
+   read. The installation webhook registers itself in hotbox — it appears in
+   the create-service form as a repo picker.
+
+Pushes to an installed repo build every hotbox service backed by that
+repo+branch (monorepos fan out from one delivery). A repo covered by both the
+App and a hand-configured per-repo webhook can double-trigger; the queue
+coalesces most of these, but prefer one mechanism per repo.
+
 ---
 
 ## 4. Deploying the Ethereum archive node
