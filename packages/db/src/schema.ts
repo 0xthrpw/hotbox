@@ -256,6 +256,20 @@ export interface GithubSourcesTable {
   build_context: Generated<string>;
   last_built_sha: string | null;
   webhook_secret: string | null;
+  /** GitHub App installation used to clone (private repos); null = public clone. pg returns bigint as string. */
+  installation_id: string | null;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+}
+
+/** GitHub App installations, maintained by /webhooks/github-app lifecycle events. */
+export interface GithubInstallationsTable {
+  id: Generated<string>;
+  /** GitHub's installation id. bigint — pg returns it as a string. */
+  installation_id: string;
+  account_login: string;
+  account_type: Generated<string>;
+  suspended_at: Timestamp | null;
   created_at: Generated<Timestamp>;
   updated_at: Generated<Timestamp>;
 }
@@ -267,6 +281,7 @@ export interface BuildsTable {
   commit_sha: string | null;
   commit_message: string | null;
   commit_author: string | null;
+  /** 'first-deploy' | 'manual' | 'api' (deploy-token trigger) | 'webhook' */
   triggered_by: string;
   status: Generated<BuildStatus>;
   image_tag: string | null;
@@ -355,6 +370,7 @@ export interface Database {
   variables: VariablesTable;
   secrets: SecretsTable;
   github_sources: GithubSourcesTable;
+  github_installations: GithubInstallationsTable;
   builds: BuildsTable;
   tokens: TokensTable;
   audit_log: AuditLogTable;

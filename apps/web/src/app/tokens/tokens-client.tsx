@@ -157,8 +157,11 @@ function CreateTokenForm({
     setSubmitting(true);
     try {
       const body: Record<string, unknown> = { name, kind, tier };
-      if (kind === 'rpc' && serviceId) body.service_id = serviceId;
-      if (rateLimit) body.rate_limit_per_min = Number(rateLimit);
+      if (serviceId) body.service_id = serviceId;
+      // Deploy tokens are service-scoped by design: the API rejects an
+      // unscoped token on the deploy routes, so always send the scope pair.
+      if (kind === 'api') body.scopes = ['deploy'];
+      if (kind === 'rpc' && rateLimit) body.rate_limit_per_min = Number(rateLimit);
       if (expiresAt) body.expires_at = new Date(expiresAt).toISOString();
 
       const res = await fetch('/api/tokens', {
@@ -176,8 +179,8 @@ function CreateTokenForm({
       onCreated(
         {
           id, name, kind, tier, prefix,
-          service_id: kind === 'rpc' ? serviceId : null,
-          scopes: [],
+          service_id: serviceId || null,
+          scopes: kind === 'api' ? ['deploy'] : [],
           rate_limit_per_min: rateLimit ? Number(rateLimit) : null,
           expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
           revoked_at: null,
@@ -198,29 +201,34 @@ function CreateTokenForm({
         <Field label="Kind">
           <Select value={kind} onChange={(e) => setKind(e.target.value as 'api' | 'rpc')}>
             <option value="rpc">rpc</option>
-            <option value="api">api</option>
+            <option value="api">api — CI deploy hook</option>
           </Select>
         </Field>
       </div>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Tier">
-          <Select value={tier} onChange={(e) => setTier(e.target.value as 'public' | 'internal')}>
-            <option value="public">public</option>
-            <option value="internal">internal — debug_* / erigon_*</option>
-          </Select>
-        </Field>
         {kind === 'rpc' && (
-          <Field label="Service">
-            <Select value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
-              {services.map((s) => <option key={s.id} value={s.id}>{s.slug}</option>)}
+          <Field label="Tier">
+            <Select value={tier} onChange={(e) => setTier(e.target.value as 'public' | 'internal')}>
+              <option value="public">public</option>
+              <option value="internal">internal — debug_* / erigon_*</option>
             </Select>
           </Field>
         )}
+        <Field
+          label="Service"
+          hint={kind === 'api' ? 'deploy scope is limited to this service' : undefined}
+        >
+          <Select value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
+            {services.map((s) => <option key={s.id} value={s.id}>{s.slug}</option>)}
+          </Select>
+        </Field>
       </div>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Rate limit" hint="requests / minute, optional">
-          <Input type="number" value={rateLimit} onChange={(e) => setRateLimit(e.target.value)} placeholder="6000" />
-        </Field>
+        {kind === 'rpc' && (
+          <Field label="Rate limit" hint="requests / minute, optional">
+            <Input type="number" value={rateLimit} onChange={(e) => setRateLimit(e.target.value)} placeholder="6000" />
+          </Field>
+        )}
         <Field label="Expires" hint="optional">
           <Input type="datetime-local" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
         </Field>
