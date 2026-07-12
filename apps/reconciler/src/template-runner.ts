@@ -220,6 +220,9 @@ export function buildOptionsForRole(opts: {
     networkAliases: aliasesFor(networks),
     restartPolicy: opts.service.config.restart_policy ?? 'on-failure',
     stopGracePeriodSec: opts.service.config.stop_grace_period_sec ?? 30,
+    // Plain services only — template roles size themselves (their
+    // ContainerSpec branch above deliberately doesn't read this).
+    resources: opts.service.config.resources,
     healthcheck:
       opts.service.config.healthcheck?.type === 'http' &&
       opts.service.public_port &&

@@ -1,17 +1,29 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import type { HotboxDb } from '@hotbox/db';
 import { recordAudit } from '../audit.js';
 
 /**
- * GitHub push-webhook receiver (Phase 4b). One endpoint per github_source —
- * the operator pastes the URL + per-source secret into the repo's webhook
- * settings. Registered OUTSIDE the /api session scope: callers are GitHub,
- * not browsers, and authentication is the HMAC signature, never a cookie.
+ * GitHub push-webhook receivers (Phase 4b). Two flavors:
+ *   - /webhooks/github/:sourceId — per-source secret, pasted into the repo's
+ *     webhook settings by hand.
+ *   - /webhooks/github-app — one endpoint for every repo the App covers,
+ *     signed with the app-level secret; fans out to all matching sources.
+ * Registered OUTSIDE the /api session scope: callers are GitHub, not
+ * browsers, and authentication is the HMAC signature, never a cookie.
+ *
+ * Every verified delivery is recorded in webhook_deliveries (pruned to the
+ * newest ~50 per source) so the dashboard can answer "why didn't my push
+ * build?". Per-source signature mismatches are recorded too (the source is
+ * known from the URL); app-level mismatches aren't attributable to a source
+ * and are left to GitHub's own delivery log.
  */
 
 /** GitHub caps webhook payloads at 25 MB; push payloads are far smaller. */
 const WEBHOOK_BODY_LIMIT = 5 * 1024 * 1024;
+
+const DELIVERIES_KEPT_PER_SOURCE = 50;
 
 /** Constant-time check of GitHub's `x-hub-signature-256: sha256=<hex>` header. */
 export function verifyGithubSignature(
@@ -55,6 +67,136 @@ function headerValue(v: string | string[] | undefined): string | undefined {
   return Array.isArray(v) ? v[0] : v;
 }
 
+interface DeliveryRow {
+  github_source_id: string;
+  via: 'source' | 'app';
+  delivery_id: string | null;
+  event: string;
+  ref?: string | null;
+  head_sha?: string | null;
+  action: 'build' | 'ignore' | 'rejected';
+  reason?: string | null;
+  build_id?: string | null;
+}
+
+/** Best-effort: the delivery log must never fail or slow a webhook response. */
+async function recordDelivery(db: HotboxDb, row: DeliveryRow): Promise<void> {
+  try {
+    await db
+      .insertInto('webhook_deliveries')
+      .values({
+        github_source_id: row.github_source_id,
+        via: row.via,
+        delivery_id: row.delivery_id,
+        event: row.event,
+        ref: row.ref ?? null,
+        head_sha: row.head_sha ?? null,
+        action: row.action,
+        reason: row.reason ?? null,
+        build_id: row.build_id ?? null,
+      })
+      .execute();
+    await db
+      .deleteFrom('webhook_deliveries')
+      .where('github_source_id', '=', row.github_source_id)
+      .where('id', 'not in', (eb) =>
+        eb
+          .selectFrom('webhook_deliveries')
+          .select('id')
+          .where('github_source_id', '=', row.github_source_id)
+          .orderBy('created_at', 'desc')
+          .limit(DELIVERIES_KEPT_PER_SOURCE),
+      )
+      .execute();
+  } catch {
+    // Display metadata only — swallow.
+  }
+}
+
+interface PushPayload {
+  ref?: string;
+  deleted?: boolean;
+  head_commit?: { id?: string } | null;
+}
+
+interface SourceRow {
+  id: string;
+  service_id: string;
+  branch: string;
+  last_built_sha: string | null;
+}
+
+/** Shared per-source push handling: decide, coalesce, enqueue, record. */
+async function processPush(
+  fastify: FastifyInstance,
+  req: FastifyRequest,
+  source: SourceRow,
+  event: string,
+  payload: PushPayload,
+  via: 'source' | 'app',
+  deliveryId: string | null,
+): Promise<{ source_id: string; queued: boolean; reason?: string; build_id?: string }> {
+  const base = {
+    github_source_id: source.id,
+    via,
+    delivery_id: deliveryId,
+    event,
+    ref: payload.ref ?? null,
+    head_sha: payload.head_commit?.id ?? null,
+  };
+
+  const decision = evaluatePushEvent(source, event, payload);
+  if (decision.action === 'ignore') {
+    await recordDelivery(fastify.ctx.db, { ...base, action: 'ignore', reason: decision.reason });
+    return { source_id: source.id, queued: false, reason: decision.reason };
+  }
+
+  // Coalesce: a queued build already picks up the branch head when the
+  // worker clones, so stacking a second row per push would only make the
+  // serial builder rebuild the same sha twice.
+  const queued = await fastify.ctx.db
+    .selectFrom('builds')
+    .select('id')
+    .where('github_source_id', '=', source.id)
+    .where('status', '=', 'queued')
+    .executeTakeFirst();
+  if (queued) {
+    await recordDelivery(fastify.ctx.db, {
+      ...base,
+      action: 'ignore',
+      reason: 'already-queued',
+      build_id: queued.id,
+    });
+    return { source_id: source.id, queued: false, reason: 'already-queued', build_id: queued.id };
+  }
+
+  const build = await fastify.ctx.db
+    .insertInto('builds')
+    .values({
+      github_source_id: source.id,
+      service_id: source.service_id,
+      triggered_by: 'webhook',
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+
+  await recordAudit(fastify.ctx.db, req, {
+    action: 'build.create',
+    target_kind: 'service',
+    target_id: source.service_id,
+    payload: {
+      build_id: build.id,
+      triggered_by: 'webhook',
+      branch: source.branch,
+      head_commit: payload.head_commit?.id ?? null,
+      via,
+    },
+  });
+  await recordDelivery(fastify.ctx.db, { ...base, action: 'build', build_id: build.id });
+
+  return { source_id: source.id, queued: true, build_id: build.id };
+}
+
 export async function webhooksRoutes(fastify: FastifyInstance): Promise<void> {
   // The HMAC must be computed over the exact bytes GitHub sent, so keep the
   // raw buffer instead of parsed JSON. addContentTypeParser is encapsulated
@@ -78,62 +220,58 @@ export async function webhooksRoutes(fastify: FastifyInstance): Promise<void> {
       .executeTakeFirst();
     if (!source?.webhook_secret) return reply.code(404).send({ error: 'not found' });
 
+    const deliveryId = headerValue(req.headers['x-github-delivery']) ?? null;
+    const event = headerValue(req.headers['x-github-event']) ?? '';
+
     const raw = req.body as Buffer;
     const signature = headerValue(req.headers['x-hub-signature-256']);
     if (!verifyGithubSignature(source.webhook_secret, raw, signature)) {
+      // The source is known from the URL, so a wrong secret IS attributable —
+      // exactly the case the dashboard log exists to surface.
+      await recordDelivery(fastify.ctx.db, {
+        github_source_id: source.id,
+        via: 'source',
+        delivery_id: deliveryId,
+        event: event || 'unknown',
+        action: 'rejected',
+        reason: 'signature-mismatch',
+      });
       return reply.code(401).send({ error: 'signature mismatch' });
     }
 
-    const event = headerValue(req.headers['x-github-event']) ?? '';
-    if (event === 'ping') return { ok: true, pong: true };
+    if (event === 'ping') {
+      await recordDelivery(fastify.ctx.db, {
+        github_source_id: source.id,
+        via: 'source',
+        delivery_id: deliveryId,
+        event,
+        action: 'ignore',
+        reason: 'ping',
+      });
+      return { ok: true, pong: true };
+    }
 
-    let payload: { ref?: string; deleted?: boolean; head_commit?: { id?: string } | null };
+    let payload: PushPayload;
     try {
       payload = JSON.parse(raw.toString('utf8'));
     } catch {
+      await recordDelivery(fastify.ctx.db, {
+        github_source_id: source.id,
+        via: 'source',
+        delivery_id: deliveryId,
+        event,
+        action: 'rejected',
+        reason: 'invalid-json',
+      });
       return reply.code(400).send({ error: 'invalid JSON payload' });
     }
 
-    const decision = evaluatePushEvent(source, event, payload);
-    if (decision.action === 'ignore') {
-      return { queued: false, reason: decision.reason };
+    const result = await processPush(fastify, req, source, event, payload, 'source', deliveryId);
+    if (result.queued) {
+      fastify.ctx.buildWorker.kick();
+      return reply.code(201).send({ queued: true, build_id: result.build_id });
     }
-
-    // Coalesce: a queued build already picks up the branch head when the
-    // worker clones, so stacking a second row per push would only make the
-    // serial builder rebuild the same sha twice.
-    const queued = await fastify.ctx.db
-      .selectFrom('builds')
-      .select('id')
-      .where('github_source_id', '=', source.id)
-      .where('status', '=', 'queued')
-      .executeTakeFirst();
-    if (queued) return { queued: false, reason: 'already-queued', build_id: queued.id };
-
-    const build = await fastify.ctx.db
-      .insertInto('builds')
-      .values({
-        github_source_id: source.id,
-        service_id: source.service_id,
-        triggered_by: 'webhook',
-      })
-      .returning('id')
-      .executeTakeFirstOrThrow();
-
-    await recordAudit(fastify.ctx.db, req, {
-      action: 'build.create',
-      target_kind: 'service',
-      target_id: source.service_id,
-      payload: {
-        build_id: build.id,
-        triggered_by: 'webhook',
-        branch: source.branch,
-        head_commit: payload.head_commit?.id ?? null,
-      },
-    });
-
-    fastify.ctx.buildWorker.kick();
-    return reply.code(201).send({ queued: true, build_id: build.id });
+    return { queued: false, reason: result.reason, build_id: result.build_id };
   });
 
   /**
@@ -152,16 +290,14 @@ export async function webhooksRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.code(401).send({ error: 'signature mismatch' });
     }
 
+    const deliveryId = headerValue(req.headers['x-github-delivery']) ?? null;
     const event = headerValue(req.headers['x-github-event']) ?? '';
     if (event === 'ping') return { ok: true, pong: true };
 
-    let payload: {
+    let payload: PushPayload & {
       action?: string;
       installation?: { id: number; account?: { login?: string; type?: string } };
       repository?: { full_name?: string };
-      ref?: string;
-      deleted?: boolean;
-      head_commit?: { id?: string } | null;
     };
     try {
       payload = JSON.parse(raw.toString('utf8'));
@@ -222,45 +358,9 @@ export async function webhooksRoutes(fastify: FastifyInstance): Promise<void> {
       .where('repo_full_name', '=', repo)
       .execute();
 
-    const results: Array<{ source_id: string; queued: boolean; reason?: string; build_id?: string }> = [];
+    const results = [];
     for (const source of sources) {
-      const decision = evaluatePushEvent(source, event, payload);
-      if (decision.action === 'ignore') {
-        results.push({ source_id: source.id, queued: false, reason: decision.reason });
-        continue;
-      }
-      const queued = await fastify.ctx.db
-        .selectFrom('builds')
-        .select('id')
-        .where('github_source_id', '=', source.id)
-        .where('status', '=', 'queued')
-        .executeTakeFirst();
-      if (queued) {
-        results.push({ source_id: source.id, queued: false, reason: 'already-queued', build_id: queued.id });
-        continue;
-      }
-      const build = await fastify.ctx.db
-        .insertInto('builds')
-        .values({
-          github_source_id: source.id,
-          service_id: source.service_id,
-          triggered_by: 'webhook',
-        })
-        .returning('id')
-        .executeTakeFirstOrThrow();
-      await recordAudit(fastify.ctx.db, req, {
-        action: 'build.create',
-        target_kind: 'service',
-        target_id: source.service_id,
-        payload: {
-          build_id: build.id,
-          triggered_by: 'webhook',
-          branch: source.branch,
-          head_commit: payload.head_commit?.id ?? null,
-          via: 'github-app',
-        },
-      });
-      results.push({ source_id: source.id, queued: true, build_id: build.id });
+      results.push(await processPush(fastify, req, source, event, payload, 'app', deliveryId));
     }
 
     if (results.some((r) => r.queued)) fastify.ctx.buildWorker.kick();

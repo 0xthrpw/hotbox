@@ -262,6 +262,27 @@ export interface GithubSourcesTable {
   updated_at: Generated<Timestamp>;
 }
 
+/**
+ * Log of received GitHub webhook deliveries and hotbox's decision, pruned to
+ * the newest ~50 per source on insert. Surfaces "why didn't my push build?"
+ * in the dashboard.
+ */
+export interface WebhookDeliveriesTable {
+  id: Generated<string>;
+  github_source_id: string;
+  /** 'source' (per-repo webhook) | 'app' */
+  via: string;
+  delivery_id: string | null;
+  event: string;
+  ref: string | null;
+  head_sha: string | null;
+  /** 'build' | 'ignore' | 'rejected' */
+  action: string;
+  reason: string | null;
+  build_id: string | null;
+  created_at: Generated<Timestamp>;
+}
+
 /** GitHub App installations, maintained by /webhooks/github-app lifecycle events. */
 export interface GithubInstallationsTable {
   id: Generated<string>;
@@ -371,6 +392,7 @@ export interface Database {
   secrets: SecretsTable;
   github_sources: GithubSourcesTable;
   github_installations: GithubInstallationsTable;
+  webhook_deliveries: WebhookDeliveriesTable;
   builds: BuildsTable;
   tokens: TokensTable;
   audit_log: AuditLogTable;

@@ -1,10 +1,18 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { randomBytes } from 'node:crypto';
-import { CreateServiceInputSchema, CreateDeploymentInputSchema, UpdateIngressInputSchema } from '@hotbox/shared';
+import {
+  CreateServiceInputSchema,
+  CreateDeploymentInputSchema,
+  UpdateIngressInputSchema,
+  UpdateServiceInputSchema,
+  UpdateGithubSourceInputSchema,
+  UpdateServiceConfigInputSchema,
+  type UpdateServiceConfigInput,
+} from '@hotbox/shared';
 import { seal, type KeyRing } from '@hotbox/crypto';
 import type { CreateServiceInput } from '@hotbox/shared';
-import type { HotboxDb, NetworkRef, SecretRef, VolumeRef } from '@hotbox/db';
+import type { HotboxDb, NetworkRef, SecretRef, ServiceConfig, VolumeRef } from '@hotbox/db';
 import { requireAuth, requireDeployAuth } from './auth.js';
 import { recordAudit } from '../audit.js';
 import { resolveVariables } from '../lib/resolve-variables.js';
@@ -21,6 +29,31 @@ const ListServicesQuerySchema = z.object({
   projectId: z.string().uuid().optional(),
   environmentId: z.string().uuid().optional(),
 });
+
+/**
+ * Merge a runtime-config patch into a stored config: absent keys untouched,
+ * null clears the key, values replace. Exported for tests.
+ */
+export function applyConfigPatch(
+  config: ServiceConfig,
+  input: UpdateServiceConfigInput,
+): ServiceConfig {
+  const next: ServiceConfig = { ...config };
+  const patch = <K extends 'command' | 'entrypoint' | 'restart_policy' | 'stop_grace_period_sec' | 'resources'>(
+    key: K,
+    value: ServiceConfig[K] | null | undefined,
+  ) => {
+    if (value === undefined) return;
+    if (value === null) delete next[key];
+    else next[key] = value;
+  };
+  patch('command', input.command);
+  patch('entrypoint', input.entrypoint);
+  patch('restart_policy', input.restart_policy);
+  patch('stop_grace_period_sec', input.stop_grace_period_sec);
+  patch('resources', input.resources);
+  return next;
+}
 
 /**
  * Recreate a service's container to apply a config change that lives in the
@@ -529,6 +562,120 @@ export async function servicesRoutes(fastify: FastifyInstance): Promise<void> {
     });
     fastify.ctx.buildWorker.kick();
     return { build };
+  });
+
+  // Recent webhook deliveries for the service's github source — the Builds
+  // page renders these so "why didn't my push build?" is answerable in the UI.
+  fastify.get('/services/:id/webhook-deliveries', async (req) => {
+    requireAuth(req);
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const source = await fastify.ctx.db
+      .selectFrom('github_sources')
+      .select('id')
+      .where('service_id', '=', id)
+      .executeTakeFirst();
+    if (!source) return { deliveries: [] };
+    const deliveries = await fastify.ctx.db
+      .selectFrom('webhook_deliveries')
+      .selectAll()
+      .where('github_source_id', '=', source.id)
+      .orderBy('created_at', 'desc')
+      .limit(50)
+      .execute();
+    return { deliveries };
+  });
+
+  fastify.patch('/services/:id', async (req, reply) => {
+    requireAuth(req);
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const input = UpdateServiceInputSchema.parse(req.body);
+    const svc = await fastify.ctx.db
+      .updateTable('services')
+      .set({ name: input.name })
+      .where('id', '=', id)
+      .returning(['id', 'name'])
+      .executeTakeFirst();
+    if (!svc) return reply.code(404).send({ error: 'not found' });
+    await recordAudit(fastify.ctx.db, req, {
+      action: 'service.update',
+      target_kind: 'service',
+      target_id: id,
+      payload: { name: input.name },
+    });
+    return { service: svc };
+  });
+
+  // Edit the github source. Takes effect on the NEXT build — nothing is
+  // rebuilt here; the UI offers "Save & rebuild" as a second call.
+  fastify.patch('/services/:id/source', async (req, reply) => {
+    requireAuth(req);
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const input = UpdateGithubSourceInputSchema.parse(req.body);
+    const source = await fastify.ctx.db
+      .selectFrom('github_sources')
+      .selectAll()
+      .where('service_id', '=', id)
+      .executeTakeFirst();
+    if (!source) {
+      return reply.code(400).send({ error: 'service is not backed by a github source' });
+    }
+    const repoOrBranchChanged =
+      (input.repo_full_name !== undefined && input.repo_full_name !== source.repo_full_name) ||
+      (input.branch !== undefined && input.branch !== source.branch);
+    const updated = await fastify.ctx.db
+      .updateTable('github_sources')
+      .set({
+        ...(input.repo_full_name !== undefined ? { repo_full_name: input.repo_full_name } : {}),
+        ...(input.branch !== undefined ? { branch: input.branch } : {}),
+        ...(input.dockerfile_path !== undefined ? { dockerfile_path: input.dockerfile_path } : {}),
+        ...(input.build_context !== undefined ? { build_context: input.build_context } : {}),
+        // A different repo/branch invalidates the "already built this sha"
+        // baseline the webhook dedup compares against.
+        ...(repoOrBranchChanged ? { last_built_sha: null } : {}),
+      })
+      .where('id', '=', source.id)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    await recordAudit(fastify.ctx.db, req, {
+      action: 'service.source_update',
+      target_kind: 'service',
+      target_id: id,
+      payload: input,
+    });
+    return { github_source: updated };
+  });
+
+  // Edit runtime config (command, restart policy, resources, …). Persists to
+  // services.config; running containers are untouched until the next
+  // deployment version bump, which snapshots/reads the new values.
+  fastify.patch('/services/:id/config', async (req, reply) => {
+    requireAuth(req);
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const input = UpdateServiceConfigInputSchema.parse(req.body);
+    const svc = await fastify.ctx.db
+      .selectFrom('services')
+      .select(['id', 'template', 'config'])
+      .where('id', '=', id)
+      .executeTakeFirst();
+    if (!svc) return reply.code(404).send({ error: 'not found' });
+    if ((input.command !== undefined || input.entrypoint !== undefined) && svc.template) {
+      return reply.code(400).send({
+        error: 'template services define their own command — overrides only apply to plain services',
+      });
+    }
+    const config = applyConfigPatch(svc.config, input);
+    await fastify.ctx.db
+      .updateTable('services')
+      .set({ config })
+      .where('id', '=', id)
+      .execute();
+    await recordAudit(fastify.ctx.db, req, {
+      action: 'service.config_update',
+      target_kind: 'service',
+      target_id: id,
+      payload: input,
+    });
+    return { config, applies: 'next-deploy' };
   });
 
   // Generate (for pre-4b sources) or rotate the per-source webhook secret.
