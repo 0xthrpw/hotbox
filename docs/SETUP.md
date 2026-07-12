@@ -313,9 +313,13 @@ form, and a single managed webhook for every installed repo.
    `.pem` downloads. Put it on the box:
 
    ```bash
-   scp the-app.private-key.pem deploy@<box>:/etc/hotbox/github-app.pem
-   ssh deploy@<box> chmod 600 /etc/hotbox/github-app.pem
+   scp the-app.private-key.pem root@<box>:/etc/hotbox/github-app.pem
+   ssh root@<box> 'chmod 600 /etc/hotbox/github-app.pem'
    ```
+
+   Root-owned with mode 600 is fine: the api container runs as root (no
+   `USER` in its Dockerfile) and reads the file through a read-only bind
+   mount, same as `/etc/hotbox/master.key`.
 
 3. In `.env` set all three (the api fails fast on a partial set):
 
@@ -466,16 +470,34 @@ echo "*/15 * * * * df /data | awk 'NR==2 && \$5+0 > 80 {print \$0}' | mail -s 'h
 - **Chain data**: **do not back up.** Re-sync via OtterSync is faster than restoring 3 TB. The chain is the canonical source.
 
 ### Upgrading hotbox itself
-Build new image tags, set `HOTBOX_VERSION=<new tag>` in `.env`, then:
+
+Two things version a release: the images (pinned by `HOTBOX_VERSION`, built
+by CI as `sha-<short>` / `master` / `latest`) and the checkout on the box
+(compose file, Traefik config). Pull **both**, or the new containers run with
+the old compose wiring — env vars added in a release silently never reach
+them.
+
+```bash
+cd /opt/hotbox && git pull                  # compose file + infra come from git
+# set HOTBOX_VERSION=sha-<new short sha> in .env
+cd infra
+docker compose -f compose.hotbox.yml --env-file ../.env pull
+```
+
+If the release includes a migration, run it **before** recreating, via
+`run --rm` — a one-shot container from the freshly pulled image. (Not `exec`:
+that runs in the still-running old container, which doesn't contain the new
+migration file.) Migrations are idempotent, so running when there's nothing
+new is harmless:
+
+```bash
+docker compose -f compose.hotbox.yml --env-file ../.env run --rm hotbox-api pnpm db:migrate
+```
+
+Then recreate — compose only touches containers whose image or config changed:
 
 ```bash
 docker compose -f compose.hotbox.yml --env-file ../.env up -d
-```
-
-Migrations are idempotent — if the new release includes a migration, run it before recreating the api:
-
-```bash
-docker compose -f compose.hotbox.yml exec hotbox-api pnpm db:migrate
 ```
 
 ---
