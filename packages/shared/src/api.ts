@@ -225,6 +225,42 @@ export const CreateDeploymentInputSchema = z.object({
 });
 export type CreateDeploymentInput = z.infer<typeof CreateDeploymentInputSchema>;
 
+export const UpdateServiceInputSchema = z.object({
+  // Display name only. Slug is immutable: subdomains, container names and
+  // docker volume names all derive from it.
+  name: z.string().min(1).max(80),
+});
+export type UpdateServiceInput = z.infer<typeof UpdateServiceInputSchema>;
+
+export const UpdateGithubSourceInputSchema = GithubSourceInputSchema
+  .omit({ installation_id: true })
+  .partial()
+  .refine((v) => Object.keys(v).length > 0, { message: 'nothing to update' });
+export type UpdateGithubSourceInput = z.infer<typeof UpdateGithubSourceInputSchema>;
+
+/**
+ * Runtime-config edit: absent = untouched, null = clear back to the image /
+ * platform default, value = set. Applies to the NEXT deployment — the API
+ * response reminds the caller, and the UI offers a redeploy in one click.
+ */
+export const UpdateServiceConfigInputSchema = z
+  .object({
+    command: CommandSchema.nullable().optional(),
+    entrypoint: CommandSchema.nullable().optional(),
+    restart_policy: z.enum(['no', 'on-failure', 'always', 'unless-stopped']).optional(),
+    stop_grace_period_sec: z.number().int().positive().max(3600).optional(),
+    resources: z
+      .object({
+        cpu_quota: z.number().positive().optional(),
+        mem_limit_bytes: z.number().int().positive().optional(),
+      })
+      .partial()
+      .nullable()
+      .optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: 'nothing to update' });
+export type UpdateServiceConfigInput = z.infer<typeof UpdateServiceConfigInputSchema>;
+
 export const CreateTokenInputSchema = z.object({
   name: z.string().min(1).max(80),
   kind: z.enum(['api', 'rpc']),

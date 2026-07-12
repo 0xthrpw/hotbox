@@ -1,5 +1,6 @@
-# Logs
-logs
+# Logs (root-anchored: a bare `logs` would ignore ANY dir named logs,
+# including app router routes like apps/web/src/app/services/[id]/logs)
+/logs
 *.log
 npm-debug.log*
 yarn-debug.log*

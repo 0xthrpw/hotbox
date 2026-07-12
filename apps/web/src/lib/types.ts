@@ -78,6 +78,19 @@ export interface GithubSource {
   webhook_secret: string | null;
 }
 
+export interface WebhookDelivery {
+  id: string;
+  via: 'source' | 'app';
+  delivery_id: string | null;
+  event: string;
+  ref: string | null;
+  head_sha: string | null;
+  action: 'build' | 'ignore' | 'rejected';
+  reason: string | null;
+  build_id: string | null;
+  created_at: string;
+}
+
 export interface Build {
   id: string;
   service_id: string;
