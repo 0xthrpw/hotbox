@@ -5,7 +5,7 @@
   "containers": [
     {
       "role": "erigon",
-      "image": "erigontech/erigon:v3.4.4",
+      "image": "erigontech/erigon:v3.6.1",
       "command": [
         "--prune.mode=archive",
         "--datadir=/home/erigon/.local/share/erigon",
@@ -20,8 +20,6 @@
       "ports": [
         { "container": 30303, "host": 30303, "protocol": "tcp", "bind": "0.0.0.0" },
         { "container": 30303, "host": 30303, "protocol": "udp", "bind": "0.0.0.0" },
-        { "container": 30304, "host": 30304, "protocol": "tcp", "bind": "0.0.0.0" },
-        { "container": 30304, "host": 30304, "protocol": "udp", "bind": "0.0.0.0" },
         { "container": 42069, "host": 42069, "protocol": "tcp", "bind": "0.0.0.0" },
         { "container": 42069, "host": 42069, "protocol": "udp", "bind": "0.0.0.0" }
       ],
